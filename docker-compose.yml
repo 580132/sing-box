@@ -2,10 +2,9 @@ services:
   sing-box:
     build:
       context: .
-      # sing-box 内核版本：latest 或具体 tag（如 v1.15.0-alpha.12）
-      # 上游发版即推镜像，tag 与 GitHub Release 同名
-      args:
-        SINGBOX_VERSION: "v1.15.0-alpha.12"
+      # 构建时内置的默认内核（稳定版），一般不用动：
+      # args:
+      #   BAKED_SINGBOX_VERSION: "v1.14.3"
     image: sing-box-sub:latest
     container_name: sing-box-sub
     restart: unless-stopped
@@ -18,6 +17,9 @@ services:
     environment:
       MANAGER_PORT: "8080"
       # MANAGER_TOKEN: "change-me"   # 生产环境务必设置
+      # 内核版本：不填=镜像内置稳定版；填版本号则启动时自动下载，无需重建镜像
+      # SINGBOX_VERSION: "v1.15.0-alpha.12"
+      # SINGBOX_VERSION: "latest"   # 最新稳定版
       AUTO_UPDATE_INTERVAL: "6h"     # 定时拉取订阅并热重载；0 关闭
       UPDATE_ON_START: "true"
       TZ: "Asia/Shanghai"
@@ -26,6 +28,7 @@ services:
       # 容器生成的 config.json / config.json.tmp 会落到 ./config 下，方便排障
       - ./config:/etc/sing-box
       - sing-box-cache:/var/cache/sing-box-subs
+      - sing-box-kernel:/opt/sing-box/versions   # 已下载内核缓存，切换版本秒切、重建不重复下载
     logging:
       driver: json-file
       options:
@@ -34,3 +37,4 @@ services:
 
 volumes:
   sing-box-cache:
+  sing-box-kernel:

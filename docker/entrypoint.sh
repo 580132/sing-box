@@ -13,7 +13,24 @@ MANAGER_PORT="${MANAGER_PORT:-8080}"
 UPDATE_ON_START="${UPDATE_ON_START:-true}"
 AUTO_UPDATE_INTERVAL="${AUTO_UPDATE_INTERVAL:-0}"
 
-mkdir -p "$(dirname "$CONFIG_PATH")" "$(dirname "$SUBS_PATH")" "$CACHE_DIR" /var/log/sing-box /run
+mkdir -p "$(dirname "$CONFIG_PATH")" "$(dirname "$SUBS_PATH")" "$CACHE_DIR" /var/log/sing-box /run "${KERNEL_DIR:-/opt/sing-box/versions}"
+
+# ---- 内核版本解析：默认用镜像内置稳定版；SINGBOX_VERSION 指定其他版本时自动下载 ----
+# 例：SINGBOX_VERSION=v1.15.0-alpha.12 / v1.14.3 / latest（最新稳定版）
+BAKED_VER="$(cat /opt/sing-box/baked/VERSION 2>/dev/null || echo "${BAKED_SINGBOX_VERSION:-v1.14.3}")"
+WANT_VER="${SINGBOX_VERSION:-$BAKED_VER}"
+if [ -z "${SINGBOX_VERSION:-}" ] || [ "$SINGBOX_VERSION" = "$BAKED_VER" ]; then
+  KERNEL_BIN="/opt/sing-box/baked/$BAKED_VER/sing-box"
+else
+  echo "[entrypoint] requested kernel $WANT_VER (baked: $BAKED_VER), ensuring download..."
+  KERNEL_BIN="$(/app/docker/install-kernel.sh "$WANT_VER" "${KERNEL_DIR:-/opt/sing-box/versions}")"
+fi
+if [ ! -x "$KERNEL_BIN" ]; then
+  echo "[entrypoint] ERROR: kernel binary not executable: $KERNEL_BIN" >&2
+  exit 1
+fi
+ln -sf "$KERNEL_BIN" /usr/local/bin/sing-box
+echo "[entrypoint] using kernel: $("$KERNEL_BIN" version | head -n 1) ($KERNEL_BIN)"
 
 if [ ! -f "$SUBS_PATH" ]; then
   echo "[]" > "$SUBS_PATH"

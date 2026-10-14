@@ -30,29 +30,33 @@ xdg-open http://localhost:8080
 
 点击面板右上角 **立即更新并重载** 即完成：远程加载订阅并热重载。
 
-## 内核版本
+## 内核版本（无需重建镜像）
 
-基础镜像即上游官方镜像（`ghcr.io/sagernet/sing-box`），tag 与 GitHub Release 同名。
-compose 默认已指定 `SINGBOX_VERSION: "v1.15.0-alpha.12"`，换版本改这里即可：
+镜像基于 alpine，构建时内置默认**稳定版**内核；运行时用 `SINGBOX_VERSION` 切换版本，
+容器启动时自动从上游 Release 下载对应内核（musl 包），下载结果缓存在
+`sing-box-kernel` volume 里，重复启动/切回旧版本秒完成：
 
 ```yaml
-build:
-  args:
-    SINGBOX_VERSION: "v1.15.0-alpha.12"  # 或 latest / v1.14.3 ...
+environment:
+  # 不填 = 内置稳定版；发新版时改这里并 recreate 即可
+  SINGBOX_VERSION: "v1.15.0-alpha.12"  # 指定版本
+  # SINGBOX_VERSION: "latest"          # 或最新稳定版
 ```
 
 ```bash
-docker compose build --no-cache   # 换版本后重新构建
-docker compose up -d
-docker exec sing-box-sub sing-box version  # 确认内核版本
+docker compose up -d --force-recreate   # 改版本后重建容器（镜像不用重新构建）
+docker exec sing-box-sub sing-box version
 ```
+
+构建时换内置版本（一般不需要）：`docker compose build --build-arg BAKED_SINGBOX_VERSION=v1.14.3`。
 
 ## 目录结构
 
 ```
 Dockerfile
 docker-compose.yml
-docker/entrypoint.sh        # 容器启动：初始拉取 -> 后台起 sing-box -> 前台起 manager
+docker/entrypoint.sh        # 容器启动：解析内核版本 -> 初始拉取 -> 后台起 sing-box -> 前台起 manager
+docker/install-kernel.sh      # 内核下载器（构建与运行共用）：按版本从上游 Release 拉 musl 包
 docker/update-subs.sh       # 手动/定时触发更新（容器内执行）
 manager/manager.py          # 零依赖（纯标准库）管理面板 + API
 config/subscriptions.example.json
@@ -64,6 +68,8 @@ config/subscriptions.example.json
 |---|---|---|
 | `MANAGER_PORT` | `8080` | 面板端口 |
 | `MANAGER_TOKEN` | 空（不鉴权） | 设置后 API 需 `Authorization: Bearer <token>` 或 `?token=` |
+| `SINGBOX_VERSION` | 空（=内置稳定版） | 运行时内核版本，如 `v1.15.0-alpha.12` / `latest`，自动下载，无需重建镜像 |
+| `KERNEL_DIR` | `/opt/sing-box/versions` | 运行时下载的内核存放目录（建议挂 volume 持久化） |
 | `CONFIG_PATH` | `/etc/sing-box/config.json` | sing-box 实际运行配置 |
 | `TEMPLATE_PATH` | `/etc/sing-box/config.template.json` | 本地基础模板，**仅节点片段模式需要**，完整配置订阅可不提供 |
 | `SUBS_PATH` | `/etc/sing-box/subscriptions.json` | 订阅列表持久化 |
