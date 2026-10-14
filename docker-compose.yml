@@ -8,7 +8,16 @@ services:
     image: sing-box-sub:latest
     container_name: sing-box-sub
     restart: unless-stopped
+    # 默认 host 网络；macvlan 备选见下面注释 + 文件底部 networks 段
     network_mode: host
+    # macvlan 时：删掉/注释上面 network_mode 一行，取消下面 6 行注释
+    # （ipv4_address 换成 LAN 内空闲 IP；macvlan 没有 docker 内嵌 DNS，必须显式配 dns）
+    # networks:
+    #   macvlan_net:
+    #     ipv4_address: 192.168.1.200
+    # dns:
+    #   - 192.168.1.36
+    #   - 223.5.5.5
     # TUN 模式必需：创建 tun 接口、配地址/路由要 NET_ADMIN；
     # 把宿主 /dev/net/tun 映射进来（宿主没有就先 modprobe tun）。
     # 不用 TUN 可删掉这两项。
@@ -50,3 +59,24 @@ services:
 volumes:
   sing-box-cache:
   sing-box-kernel:
+
+# macvlan 备选网络：容器拿独立 LAN IP + 独立 netns，TUN 抢路由只影响容器内部。
+# 启用步骤：
+#   1. 查宿主上网网卡：ip route show default（取 dev 后面的名字，如 eth0）
+#   2. 下面 parent / subnet / gateway 按 LAN 实际填写，
+#      上面 service 里 ipv4_address 填一个 LAN 内空闲 IP
+#   3. 注释掉 service 的 network_mode: host，取消 service 里 networks/dns 注释
+# 注意：
+#   - macvlan 下宿主机直连不通容器 IP（内核隔离设计），用 LAN 内其他设备打开面板
+#    （http://192.168.1.200:8088），或在宿主建 macvlan-shim 子接口绕行
+#   - cap_add NET_ADMIN + /dev/net/tun 照样保留（TUN 建接口用）
+#   - TUN_EXCLUDE 建议保留，LAN 流量别进 TUN
+# networks:
+#   macvlan_net:
+#     driver: macvlan
+#     driver_opts:
+#       parent: eth0
+#     ipam:
+#       config:
+#         - subnet: 192.168.1.0/24
+#           gateway: 192.168.1.1
