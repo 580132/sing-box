@@ -81,6 +81,7 @@ config/subscriptions.example.json
 | `MANAGER_TOKEN` | 空（不鉴权） | 设置后 API 需 `Authorization: Bearer <token>` 或 `?token=` |
 | `SINGBOX_VERSION` | 空（=内置稳定版） | 运行时内核版本，如 `v1.15.0-alpha.12` / `latest`，自动下载，无需重建镜像 |
 | `GITHUB_PROXY` | 空（直连） | GitHub 代理前缀，如 `https://ghproxy.com/`，拼到 Release 下载地址前（含 `latest` 解析） |
+| `TUN_EXCLUDE` | 空 | 逗号分隔的 CIDR，自动并入 tun 入站 `route_exclude_address`（防 `auto_route` 吞内网 DNS） |
 | `KERNEL_DIR` | `/opt/sing-box/versions` | 运行时下载的内核存放目录（建议挂 volume 持久化） |
 | `CONFIG_PATH` | `/etc/sing-box/config.json` | sing-box 实际运行配置 |
 | `TEMPLATE_PATH` | `/etc/sing-box/config.template.json` | 本地基础模板，**仅节点片段模式需要**，完整配置订阅可不提供 |
@@ -148,6 +149,14 @@ ls -l /dev/net/tun || sudo modprobe tun   # 没有就加载内核模块
 ```
 
 > 不用 TUN 的话把 compose 里 `cap_add`/`devices` 两节删掉即可。
+
+订阅是远端完整配置、不方便手改时，用 `TUN_EXCLUDE`（逗号分隔 CIDR）让面板在每次
+更新订阅时自动并入 tun 入站的 `route_exclude_address`，防止 `auto_route` 吞掉内网
+DNS/网关（典型症状：启动时 `lookup ... deadline exceeded` 接着 FATAL）：
+
+```yaml
+TUN_EXCLUDE: "192.168.1.0/24"
+```
 
 ## 注意事项
 

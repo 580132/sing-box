@@ -30,6 +30,8 @@ services:
       # GitHub 代理：国内直连 Release 吃力时填，如 https://ghproxy.com/
       # （构建时预装不受影响，只作用于运行时按需下载）
       # GITHUB_PROXY: "https://ghproxy.com/"
+      # TUN 抢路由导致内网 DNS 被吞时，把网段摘出去（多个逗号分隔）：
+      TUN_EXCLUDE: "192.168.1.0/24"
       AUTO_UPDATE_INTERVAL: "6h"     # 定时拉取订阅并热重载；0 关闭
       UPDATE_ON_START: "true"
       TZ: "Asia/Shanghai"

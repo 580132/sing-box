@@ -308,6 +308,26 @@ def merge_config(template, all_outbounds):
     return cfg, remote_tags
 
 
+def apply_tun_excludes(cfg):
+    """TUN_EXCLUDE 环境变量：逗号/空格分隔的 CIDR，自动并入各 tun 入站的
+    route_exclude_address。用于 auto_route 抢走默认路由、吞掉内网 DNS 等场景。
+    返回改动的条目数。"""
+    raw = (os.environ.get("TUN_EXCLUDE") or "").replace(";", ",").replace(" ", ",")
+    cidrs = [c.strip() for c in raw.split(",") if c.strip()]
+    if not cidrs:
+        return cfg, 0
+    n = 0
+    for ib in (cfg.get("inbounds") or []):
+        if not isinstance(ib, dict) or ib.get("type") != "tun":
+            continue
+        cur = ib.get("route_exclude_address") or []
+        merged = list(cur) + [c for c in cidrs if c not in cur]
+        if merged != cur:
+            ib["route_exclude_address"] = merged
+            n += 1
+    return cfg, n
+
+
 def singbox_check(path):
     r = subprocess.run([SINGBOX_BIN, "check", "-c", path],
                        capture_output=True, text=True, timeout=60)
@@ -422,6 +442,9 @@ def do_update_and_reload(fetch=True, send_hup_signal=True):
                         "message": f"订阅仅为节点片段，但读取模板失败 {TEMPLATE_PATH}，无法合并"}
             cfg, tags = merge_config(template, all_obs)
             apply_mode = "template-merge"
+        cfg, tun_n = apply_tun_excludes(cfg)
+        if tun_n:
+            log(f"TUN 改写：{tun_n} 个 tun 入站已加入 route_exclude_address")
         os.makedirs(os.path.dirname(os.path.abspath(CONFIG_PATH)) or ".", exist_ok=True)
         tmp = CONFIG_PATH + ".tmp"
         with open(tmp, "w", encoding="utf-8") as f:
@@ -445,7 +468,7 @@ def do_update_and_reload(fetch=True, send_hup_signal=True):
             ok, msg = False, "配置已写入（--update-once，不发送 SIGHUP）"
         result = {"ok": True, "reloaded": ok, "fetch": True, "message": msg,
                   "mode": apply_mode, "tags": tags, "count": len(tags), "details": details,
-                  "check_output": output[-4000:]}
+                  "tun_excludes": tun_n, "check_output": output[-4000:]}
         save_last_update({"at": started, **{k: v for k, v in result.items() if k != "check_output"}})
         return result
 
