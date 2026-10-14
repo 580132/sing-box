@@ -1,5 +1,7 @@
 # sing-box 订阅管理镜像
 # 基础镜像：官方 sing-box（已含 sing-box 二进制）
+# 构建时用 --build-arg SINGBOX_VERSION=<tag> 指定内核版本，
+# 如 v1.15.0-alpha.12（tag 与上游 GitHub Release 同名）；默认 latest
 ARG SINGBOX_VERSION=latest
 FROM ghcr.io/sagernet/sing-box:${SINGBOX_VERSION}
 

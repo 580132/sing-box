@@ -30,6 +30,23 @@ xdg-open http://localhost:8080
 
 点击面板右上角 **立即更新并重载** 即完成：远程加载订阅并热重载。
 
+## 内核版本
+
+基础镜像即上游官方镜像（`ghcr.io/sagernet/sing-box`），tag 与 GitHub Release 同名。
+compose 默认已指定 `SINGBOX_VERSION: "v1.15.0-alpha.12"`，换版本改这里即可：
+
+```yaml
+build:
+  args:
+    SINGBOX_VERSION: "v1.15.0-alpha.12"  # 或 latest / v1.14.3 ...
+```
+
+```bash
+docker compose build --no-cache   # 换版本后重新构建
+docker compose up -d
+docker exec sing-box-sub sing-box version  # 确认内核版本
+```
+
 ## 目录结构
 
 ```

@@ -1,6 +1,11 @@
 services:
   sing-box:
-    build: .
+    build:
+      context: .
+      # sing-box 内核版本：latest 或具体 tag（如 v1.15.0-alpha.12）
+      # 上游发版即推镜像，tag 与 GitHub Release 同名
+      args:
+        SINGBOX_VERSION: "v1.15.0-alpha.12"
     image: sing-box-sub:latest
     container_name: sing-box-sub
     restart: unless-stopped
