@@ -1,0 +1,6 @@
+__pycache__
+*.pyc
+.git
+.tmp/
+data/
+C:\Users\MSI-NB\AppData\Local\Temp\opencode/
