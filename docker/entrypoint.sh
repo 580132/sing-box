@@ -15,19 +15,29 @@ AUTO_UPDATE_INTERVAL="${AUTO_UPDATE_INTERVAL:-0}"
 
 mkdir -p "$(dirname "$CONFIG_PATH")" "$(dirname "$SUBS_PATH")" "$CACHE_DIR" /var/log/sing-box /run "${KERNEL_DIR:-/opt/sing-box/versions}"
 
-# ---- 内核版本解析：SINGBOX_VERSION（compose）> pinned（面板钉住）> 内置稳定版 ----
-# compose 写了版本就以 compose 为准（面板此时拒绝切换，不冲突）；
-# compose 没写时，面板钉住的版本在重建后依然生效。
+# ---- 内核版本解析：意图版本 = max(compose 环境变量， 面板钉住， 内置版) ----
+# 面板只允许升级到比 compose 更新的版本，取最大天然一致，永不冲突。
 . /app/docker/verlib.sh
 BAKED_VER="$(cat /opt/sing-box/baked/VERSION 2>/dev/null || echo "${BAKED_SINGBOX_VERSION:-v1.14.3}")"
 PINNED_VER="$(cat "${KERNEL_DIR:-/opt/sing-box/versions}/pinned" 2>/dev/null || true)"
-if [ -n "${SINGBOX_VERSION:-}" ]; then
-  WANT_VER="$SINGBOX_VERSION"
-elif [ -n "$PINNED_VER" ]; then
-  WANT_VER="$PINNED_VER"
-else
-  WANT_VER="$BAKED_VER"
-fi
+# ---- 意图版本 = 三方最大值：compose 环境变量、面板钉住、内置版 ----
+# 面板只允许升级（目标必须比 compose 新），这里取最大天然一致，永不冲突。
+_norm_tag() { case "$1" in v*|V*) echo "$1";; "") echo "";; *) echo "v$1";; esac; }
+_resolve_maybe() {
+  case "$1" in
+    "") echo "";;
+    latest|stable) /app/docker/install-kernel.sh --resolve-tag "$1" 2>/dev/null || true;;
+    *) _norm_tag "$1";;
+  esac
+}
+WANT_VER="$BAKED_VER"
+for _src in "${SINGBOX_VERSION:-}" "$PINNED_VER"; do
+  [ -n "$_src" ] || continue
+  _cand="$(_resolve_maybe "$_src")"
+  [ -n "$_cand" ] || continue
+  WANT_VER="$(max_version "$WANT_VER" "$_cand")"
+done
+echo "[entrypoint] kernel intent: want=$WANT_VER (env=${SINGBOX_VERSION:-none} pinned=${PINNED_VER:-none} baked=$BAKED_VER)"
 # ---- 防倒退：本地已有（内置+缓存）更新版本时，不下载低版本 ----
 # 例：面板钉住/缓存了 v1.15.0-alpha.12，compose 写 v1.14.3 → 继续用 alpha.12。
 # 如需强制降级：ALLOW_KERNEL_DOWNGRADE=1。

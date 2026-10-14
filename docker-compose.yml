@@ -24,14 +24,12 @@ services:
     environment:
       MANAGER_PORT: "8080"
       # MANAGER_TOKEN: "change-me"   # 生产环境务必设置
-      # 内核版本（二选一，互斥，不冲突）：
-      # 1) 在这里写死版本 → 以 compose 为准，面板只能看不能换。
-      #    若本地已有更新版本（面板钉住/缓存），默认不会降级下载，
-      #    除非再加 ALLOW_KERNEL_DOWNGRADE: "1" 强制：
+      # 内核版本（和面板协同，规则统一）：
+      # compose 在这里写死版本即定下限：面板只能升级到更新版本，低版本拒绝切换；
+      # 启动时取 max(compose, 面板钉住, 内置) 运行，本地有更新版默认不降级下载。
+      # 彻底由面板接管：注释掉 SINGBOX_VERSION。
       # SINGBOX_VERSION: "v1.14.3"
-      # ALLOW_KERNEL_DOWNGRADE: "1"
-      # 2) 注释掉上面 → 归面板管：在面板查最新稳定/预览版并一键切换，
-      #    成功后自动钉住，重建容器仍用该版本（存 sing-box-kernel volume 的 pinned 文件）
+      # ALLOW_KERNEL_DOWNGRADE: "1"   # 强制按低版本降级（默认不降）
       # GitHub 代理：国内直连 Release 吃力时填，如 https://ghproxy.com/
       # （构建时预装不受影响，只作用于运行时按需下载）
       # GITHUB_PROXY: "https://ghproxy.com/"

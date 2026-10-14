@@ -520,16 +520,73 @@ def read_baked_version():
 
 
 def kernel_source():
-    """版本控制权归属：compose 里写了 SINGBOX_VERSION 就归 compose，面板只读；
-    没写才归面板（可切换、可钉住）。两边永不打架。"""
+    """版本基线来源：compose 写了 SINGBOX_VERSION 则基线归 compose，
+    否则归面板。面板允许升级到比基线更新的版本，禁止平级/降级。"""
     return "compose" if env("SINGBOX_VERSION", "").strip() else "panel"
 
 
-def require_panel_source():
-    if kernel_source() == "compose":
-        raise RuntimeError(
-            "版本由 compose 的 SINGBOX_VERSION 接管（当前值：%s），面板拒绝切换以防冲突；"
-            "如需面板管理，请注释掉它并重建容器" % env("SINGBOX_VERSION", ""))
+_PRE_RANK = (("alpha", 1), ("beta", 2), ("pre", 2), ("rc", 3))
+
+
+def _pre_key(s):
+    sl = (s or "").lower()
+    for name, r in _PRE_RANK:
+        if sl.startswith(name):
+            tail = sl[len(name):].lstrip(".-")
+            return (r, int(tail) if tail.isdigit() else 0)
+    return (0, 0)
+
+
+def compare_versions(a, b):
+    """版本比较（与 docker/verlib.sh 的 vercmp 同规则）：1(A>B)/0/-1。"""
+    def split(v):
+        v = (v or "").strip()
+        if v[:1] in ("v", "V"):
+            v = v[1:]
+        core, _, pre = v.partition("-")
+        return ([int(p) if p.isdigit() else 0 for p in core.split(".")], pre)
+    na, pa = split(a)
+    nb, pb = split(b)
+    n = max(len(na), len(nb))
+    na += [0] * (n - len(na))
+    nb += [0] * (n - len(nb))
+    if na != nb:
+        return 1 if na > nb else -1
+    if not pa and not pb:
+        return 0
+    if not pa:
+        return 1
+    if not pb:
+        return -1
+    ka, kb = _pre_key(pa), _pre_key(pb)
+    return (ka > kb) - (ka < kb)
+
+
+def resolve_concrete(v):
+    """版本号规范化为具体 tag（latest/stable 查上游稳定版，失败返回空）。"""
+    v = (v or "").strip()
+    if not v:
+        return ""
+    if v.lower() in ("latest", "stable"):
+        try:
+            s = fetch_releases().get("stable", "")
+            return ("v" + s.lstrip("vV")) if s else ""
+        except Exception:  # noqa: BLE001
+            return ""
+    return v if v[:1] in ("v", "V") else "v" + v
+
+
+def require_upgrade_allowed(version):
+    """面板切换守则：compose 未设版本随便换；设了则目标必须更新，否则拒绝（防冲突）。"""
+    want = env("SINGBOX_VERSION", "").strip()
+    if not want:
+        return
+    target = resolve_concrete(version)
+    base = resolve_concrete(want)
+    if not target or not base:
+        raise RuntimeError("版本解析失败（上游不可达），已拒绝以防与 compose 冲突，稍后重试")
+    if compare_versions(target, base) <= 0:
+        raise RuntimeError(f"目标 {target} 不比 compose 版本 {base} 新，拒绝切换；请改 compose 或选更新版本")
 
 
 def read_pinned_version():
@@ -920,7 +977,7 @@ class Handler(BaseHTTPRequestHandler):
             if not version:
                 return self.send_json({"ok": False, "message": "请填写版本号"}, 400)
             try:
-                require_panel_source()
+                require_upgrade_allowed(version)
                 result = switch_kernel(version, pin=True)
             except (ValueError, RuntimeError) as e:
                 return self.send_json({"ok": False, "message": str(e)[:1000]}, 500)
@@ -935,7 +992,7 @@ class Handler(BaseHTTPRequestHandler):
             if not baked:
                 return self.send_json({"ok": False, "message": "未找到内置版本"}, 500)
             try:
-                require_panel_source()
+                require_upgrade_allowed(baked)
                 result = switch_kernel(baked, pin=False)
                 clear_pinned_version()
             except (ValueError, RuntimeError) as e:
@@ -1075,17 +1132,14 @@ async function loadKernel(force){const el=document.getElementById('kernel');
 try{el.innerHTML='<small>查询中…</small>';
 const k=await api('/api/kernel'+(force?'?refresh=1':''));
 const L=k.latest||{};
-const locked=k.source==='compose';
-const dis=locked?'disabled':'';
-const cached=(k.cached||[]).map(c=>`<button class=ghost style="padding:4px 10px" ${c.current||locked?'disabled':''} onclick="switchCached('${esc(c.version)}')">${esc(c.version)}${c.current?' ●':''}</button>`).join(' ')||'<small>无</small>';
+const managed=k.source==='compose';
+const cached=(k.cached||[]).map(c=>`<button class=ghost style="padding:4px 10px" ${c.current?'disabled':''} onclick="switchCached('${esc(c.version)}')">${esc(c.version)}${c.current?' ●':''}</button>`).join(' ')||'<small>无</small>';
 el.innerHTML=`<small>当前: <b>${esc(k.current.version||'?')}</b> <span class=url>${esc(k.current.bin||'')}</span><br/>`
-+`控制权: <b>${locked?('compose（'+esc(k.env_want)+'），面板只读':'面板')}</b> · 内置: ${esc(k.baked||'-')} · 钉住: ${esc(k.pinned||'无')}<br/>`
-+`最新稳定版: <b>${esc(L.stable||'-')}</b> ${!locked&&L.stable&&k.current.version!==L.stable?'<button style="padding:4px 10px" onclick="switchCached(\\''+esc(L.stable)+'\\')">升级</button>':''}<br/>`
-+`最新预览版: <b>${esc(L.preview||'-')}</b> ${!locked&&L.preview?'<button class=ghost style="padding:4px 10px" onclick="switchCached(\\''+esc(L.preview)+'\\')">试用</button>':''}<br/>`
++`基线: <b>${managed?('compose（'+esc(k.env_want)+'，仅允许升级）':'面板')}</b> · 内置: ${esc(k.baked||'-')} · 钉住: ${esc(k.pinned||'无')}<br/>`
++`最新稳定版: <b>${esc(L.stable||'-')}</b> ${L.stable&&k.current.version!==L.stable?'<button style="padding:4px 10px" onclick="switchCached(\\''+esc(L.stable)+'\\')">升级</button>':''}<br/>`
++`最新预览版: <b>${esc(L.preview||'-')}</b> ${L.preview?'<button class=ghost style="padding:4px 10px" onclick="switchCached(\\''+esc(L.preview)+'\\')">试用</button>':''}<br/>`
 +`已缓存: ${cached}<br/>`
 +`<span class=url>上游查询: ${esc(L.checked_at||'未成功')}${L.error?(' · '+esc(L.error.slice(0,100))):''}</span></small>`;
-btnKernelUpdate.disabled=locked;btnKernelRestore.disabled=locked;
-if(locked)el.innerHTML+=`<br/><small style=color:#fbbf24>compose 指定了 SINGBOX_VERSION，版本以 compose 为准；注释掉它并重建容器后才能在面板切换。</small>`;
 }catch(e){el.innerHTML='<small style=color:#f87171>'+esc(e.message)+'</small>';}}
 async function switchCached(v){if(!confirm('切换内核到 '+v+'？sing-box 会重启（秒级中断）。'))return;
 btnKernelUpdate.disabled=true;btnKernelUpdate.textContent='切换中…';

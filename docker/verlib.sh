@@ -56,3 +56,10 @@ newest_local() {
   done
   echo "$_best"
 }
+
+# max_version A B -> 较新的那个（相等取 B；空值取另一方）
+max_version() {
+  if [ -z "$1" ]; then echo "$2"; return 0; fi
+  if [ -z "$2" ]; then echo "$1"; return 0; fi
+  if [ "$(vercmp "$1" "$2")" = "1" ]; then echo "$1"; else echo "$2"; fi
+}
