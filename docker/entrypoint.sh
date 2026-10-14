@@ -15,11 +15,19 @@ AUTO_UPDATE_INTERVAL="${AUTO_UPDATE_INTERVAL:-0}"
 
 mkdir -p "$(dirname "$CONFIG_PATH")" "$(dirname "$SUBS_PATH")" "$CACHE_DIR" /var/log/sing-box /run "${KERNEL_DIR:-/opt/sing-box/versions}"
 
-# ---- 内核版本解析：默认用镜像内置稳定版；SINGBOX_VERSION 指定其他版本时自动下载 ----
-# 例：SINGBOX_VERSION=v1.15.0-alpha.12 / v1.14.3 / latest（最新稳定版）
+# ---- 内核版本解析：SINGBOX_VERSION（compose）> pinned（面板钉住）> 内置稳定版 ----
+# compose 写了版本就以 compose 为准（面板此时拒绝切换，不冲突）；
+# compose 没写时，面板钉住的版本在重建后依然生效。
 BAKED_VER="$(cat /opt/sing-box/baked/VERSION 2>/dev/null || echo "${BAKED_SINGBOX_VERSION:-v1.14.3}")"
-WANT_VER="${SINGBOX_VERSION:-$BAKED_VER}"
-if [ -z "${SINGBOX_VERSION:-}" ] || [ "$SINGBOX_VERSION" = "$BAKED_VER" ]; then
+PINNED_VER="$(cat "${KERNEL_DIR:-/opt/sing-box/versions}/pinned" 2>/dev/null || true)"
+if [ -n "${SINGBOX_VERSION:-}" ]; then
+  WANT_VER="$SINGBOX_VERSION"
+elif [ -n "$PINNED_VER" ]; then
+  WANT_VER="$PINNED_VER"
+else
+  WANT_VER="$BAKED_VER"
+fi
+if [ "$WANT_VER" = "$BAKED_VER" ]; then
   KERNEL_BIN="/opt/sing-box/baked/$BAKED_VER/sing-box"
 else
   echo "[entrypoint] requested kernel $WANT_VER (baked: $BAKED_VER), ensuring download..."

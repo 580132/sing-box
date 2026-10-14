@@ -32,21 +32,20 @@ xdg-open http://localhost:8080
 
 ## 内核版本（无需重建镜像）
 
-镜像基于 alpine，构建时内置默认**稳定版**内核；运行时用 `SINGBOX_VERSION` 切换版本，
-容器启动时自动从上游 Release 下载对应内核（musl 包），下载结果缓存在
-`sing-box-kernel` volume 里，重复启动/切回旧版本秒完成：
+镜像基于 alpine，构建时内置默认**稳定版**内核；运行时切换版本自动从上游 Release
+下载（musl 包），缓存在 `sing-box-kernel` volume 里。**版本控制权二选一、互斥：**
+
+- compose 里写了 `SINGBOX_VERSION` → 以 compose 为准，面板只显示不给换；
+- 注释掉它 → 归面板管：面板「🔧 内核版本」卡片点「检查更新」看最新稳定/预览版，
+  一键切换（下载→新二进制 check→重启 sing-box→失败自动回滚旧版），成功后自动钉住，
+  容器重建仍用该版本；「恢复内置版」解除钉住。
 
 ```yaml
 environment:
-  # 不填 = 内置稳定版；发新版时改这里并 recreate 即可
-  SINGBOX_VERSION: "v1.15.0-alpha.12"  # 指定版本
-  # SINGBOX_VERSION: "latest"          # 或最新稳定版
+  # SINGBOX_VERSION: "v1.15.0-alpha.12"  # 放开即 compose 接管
 ```
 
-```bash
-docker compose up -d --force-recreate   # 改版本后重建容器（镜像不用重新构建）
-docker exec sing-box-sub sing-box version
-```
+上游查询走 GitHub API（半小时缓存、失败沿用旧值），限流时可设 `GITHUB_TOKEN` 提额度。
 
 构建时换内置版本（一般不需要）：`docker compose build --build-arg BAKED_SINGBOX_VERSION=v1.14.3`。
 
@@ -79,7 +78,8 @@ config/subscriptions.example.json
 |---|---|---|
 | `MANAGER_PORT` | `8080` | 面板端口 |
 | `MANAGER_TOKEN` | 空（不鉴权） | 设置后 API 需 `Authorization: Bearer <token>` 或 `?token=` |
-| `SINGBOX_VERSION` | 空（=内置稳定版） | 运行时内核版本，如 `v1.15.0-alpha.12` / `latest`，自动下载，无需重建镜像 |
+| `SINGBOX_VERSION` | 空（=面板接管） | 写死则 compose 接管版本，面板只读；注释掉则归面板切换+钉住 |
+| `GITHUB_TOKEN` | 空 | GitHub API token，面板查最新版限流时提额度 |
 | `GITHUB_PROXY` | 空（直连） | GitHub 代理前缀，如 `https://ghproxy.com/`，拼到 Release 下载地址前（含 `latest` 解析） |
 | `TUN_EXCLUDE` | 空 | 逗号分隔的 CIDR，自动并入 tun 入站 `route_exclude_address`（防 `auto_route` 吞内网 DNS） |
 | `KERNEL_DIR` | `/opt/sing-box/versions` | 运行时下载的内核存放目录（建议挂 volume 持久化） |
@@ -105,6 +105,9 @@ DELETE /api/subscriptions/{id}  删除
 POST /api/subscriptions/{id}/test  只拉取该条做连通性测试，不写配置
 POST /api/reload                {fetch=true} 拉取全量订阅并热重载（默认）
 POST /api/reload-only           不拉取，仅 SIGHUP 重载当前 config.json
+GET  /api/kernel[?refresh=1]       内核信息：当前/内置/钉住/控制权/已缓存/最新稳定/最新预览
+POST /api/kernel/update           {version} 下载并切换内核（失败回滚），成功自动钉住
+POST /api/kernel/restore          切回内置版并解除钉住
 GET  /api/logs?n=200            manager 日志尾部（排障用）
 ```
 

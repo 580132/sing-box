@@ -45,6 +45,10 @@ SUBS_PATH = env("SUBS_PATH", "/etc/sing-box/subscriptions.json")
 CACHE_DIR = env("CACHE_DIR", "/var/cache/sing-box-subs")
 SINGBOX_BIN = env("SINGBOX_BIN", "sing-box")
 PID_FILE = env("PID_FILE", "/run/sing-box.pid")
+KERNEL_DIR = env("KERNEL_DIR", "/opt/sing-box/versions")
+BAKED_DIR = "/opt/sing-box/baked"
+BIN_LINK = "/usr/local/bin/sing-box"
+INSTALL_SCRIPT = env("INSTALL_KERNEL_SCRIPT", "/app/docker/install-kernel.sh")
 MANAGER_PORT = int(env("MANAGER_PORT", "8080"))
 MANAGER_TOKEN = env("MANAGER_TOKEN", "")
 AUTO_UPDATE_INTERVAL = env("AUTO_UPDATE_INTERVAL", "0")
@@ -56,6 +60,10 @@ def last_update_path():
     return os.path.join(env("CACHE_DIR", CACHE_DIR), "last_update.json")
 
 _lock = threading.Lock()
+_kernel_lock = threading.RLock()
+_kernel_releases = {"at": 0, "stable": "", "preview": "", "error": ""}
+RELEASES_TTL = 1800
+VERSION_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._+\-]{0,40}$")
 _logs = []
 _logs_lock = threading.Lock()
 MAX_LOGS = 500
@@ -328,8 +336,8 @@ def apply_tun_excludes(cfg):
     return cfg, n
 
 
-def singbox_check(path):
-    r = subprocess.run([SINGBOX_BIN, "check", "-c", path],
+def singbox_check(path, binpath=None):
+    r = subprocess.run([binpath or SINGBOX_BIN, "check", "-c", path],
                        capture_output=True, text=True, timeout=60)
     return r.returncode, (r.stdout or "") + (r.stderr or "")
 
@@ -483,13 +491,281 @@ def get_status():
     except OSError:
         cfg_info = {"exists": False}
     return {
-        "singbox": {"running": pid is not None, "pid": pid, "bin": SINGBOX_BIN},
+        "singbox": {"running": pid is not None, "pid": pid, "bin": SINGBOX_BIN,
+                    "kernel_version": bin_version(resolve_current_bin())},
         "config": cfg_info,
         "subscriptions": {"total": len(subs), "enabled": sum(1 for s in subs if s.get("enabled", True))},
         "last_update": load_last_update(),
         "allow_empty": ALLOW_EMPTY_OUTBOUNDS,
         "time": utcnow_iso(),
     }
+
+
+# ---------------- 内核版本管理 ----------------
+
+def kernel_base_dir():
+    return env("KERNEL_DIR", KERNEL_DIR)
+
+
+def pin_path():
+    return os.path.join(kernel_base_dir(), "pinned")
+
+
+def read_baked_version():
+    try:
+        with open(os.path.join(BAKED_DIR, "VERSION"), "r", encoding="utf-8") as f:
+            return f.read().strip()
+    except OSError:
+        return env("BAKED_SINGBOX_VERSION", "")
+
+
+def kernel_source():
+    """版本控制权归属：compose 里写了 SINGBOX_VERSION 就归 compose，面板只读；
+    没写才归面板（可切换、可钉住）。两边永不打架。"""
+    return "compose" if env("SINGBOX_VERSION", "").strip() else "panel"
+
+
+def require_panel_source():
+    if kernel_source() == "compose":
+        raise RuntimeError(
+            "版本由 compose 的 SINGBOX_VERSION 接管（当前值：%s），面板拒绝切换以防冲突；"
+            "如需面板管理，请注释掉它并重建容器" % env("SINGBOX_VERSION", ""))
+
+
+def read_pinned_version():
+    try:
+        with open(pin_path(), "r", encoding="utf-8") as f:
+            return f.read().strip()
+    except OSError:
+        return ""
+
+
+def write_pinned_version(v):
+    os.makedirs(kernel_base_dir(), exist_ok=True)
+    with open(pin_path(), "w", encoding="utf-8") as f:
+        f.write(v)
+
+
+def clear_pinned_version():
+    try:
+        os.remove(pin_path())
+    except OSError:  # noqa: BLE001
+        pass
+
+
+def resolve_current_bin():
+    if os.path.islink(BIN_LINK):
+        return os.path.realpath(BIN_LINK)
+    return shutil.which(SINGBOX_BIN) or SINGBOX_BIN
+
+
+def bin_version(path):
+    try:
+        r = subprocess.run([path, "version"], capture_output=True, text=True, timeout=15)
+        first = ((r.stdout or "").strip().splitlines() or [""])[:1][0]
+        m = re.search(r"sing-box version (\S+)", first)
+        return m.group(1) if m else first[:80]
+    except Exception:  # noqa: BLE001
+        return ""
+
+
+def pick_versions(data):
+    """从 releases 列表选最新稳定版与最新预览版（纯函数，便于测试）。"""
+    stable = preview = ""
+    for rel in data:
+        if not isinstance(rel, dict) or rel.get("draft"):
+            continue
+        tag = rel.get("tag_name") or ""
+        if not tag:
+            continue
+        if rel.get("prerelease"):
+            if not preview:
+                preview = tag
+        elif not stable:
+            stable = tag
+        if stable and preview:
+            break
+    return stable, preview
+
+
+def fetch_releases(force=False):
+    """拉 GitHub releases 取最新稳定/预览版。结果缓存 RELEASES_TTL 秒，防限流。
+    可设 GITHUB_TOKEN 提额度。失败时尽量返回旧缓存。"""
+    now = time.time()
+    with _kernel_lock:
+        hit = (_kernel_releases["at"] and now - _kernel_releases["at"] < RELEASES_TTL
+               and not _kernel_releases["error"] and not force)
+        if hit:
+            return dict(_kernel_releases)
+    try:
+        req = urllib.request.Request(
+            "https://api.github.com/repos/SagerNet/sing-box/releases?per_page=30",
+            headers={"User-Agent": "sing-box-sub-manager/1.0",
+                     "Accept": "application/vnd.github+json"})
+        token = env("GITHUB_TOKEN", "")
+        if token:
+            req.add_header("Authorization", f"Bearer {token}")
+        with urllib.request.urlopen(req, timeout=20) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+        stable, preview = pick_versions(data)
+        with _kernel_lock:
+            _kernel_releases.update(at=now, stable=stable, preview=preview, error="")
+            return dict(_kernel_releases)
+    except Exception as e:  # noqa: BLE001
+        with _kernel_lock:
+            if _kernel_releases["at"]:
+                out = dict(_kernel_releases)
+                out["error"] = f"刷新失败，显示缓存：{e}"[:300]
+                return out
+            return {"at": 0, "stable": "", "preview": "", "error": str(e)[:300]}
+
+
+def list_cached_kernels():
+    out = []
+    try:
+        cur = os.path.realpath(resolve_current_bin())
+    except Exception:  # noqa: BLE001
+        cur = ""
+    try:
+        names = sorted(os.listdir(kernel_base_dir()))
+    except OSError:
+        return out
+    for n in names:
+        b = os.path.join(kernel_base_dir(), n, "sing-box")
+        if os.path.isfile(b) and os.access(b, os.X_OK):
+            try:
+                is_cur = os.path.realpath(b) == cur
+            except Exception:  # noqa: BLE001
+                is_cur = False
+            out.append({"version": n, "current": is_cur})
+    return out
+
+
+def install_kernel(version):
+    """调 install-kernel.sh 下载/复用指定版本，返回 (bin_path, log_tail)。"""
+    r = subprocess.run([INSTALL_SCRIPT, version, kernel_base_dir()],
+                       capture_output=True, text=True, timeout=600)
+    tail = ((r.stdout or "") + (r.stderr or ""))[-3000:]
+    if r.returncode != 0:
+        raise RuntimeError(f"内核下载失败：{tail[-500:]}")
+    lines = [ln.strip() for ln in (r.stdout or "").splitlines() if ln.strip()]
+    if not lines or not os.path.isfile(lines[-1]):
+        raise RuntimeError(f"安装脚本未返回有效路径：{tail[-500:]}")
+    return lines[-1], tail
+
+
+def stop_singbox(timeout=15):
+    pid = find_singbox_pid()
+    if not pid:
+        return
+    try:
+        os.kill(pid, signal.SIGTERM)
+    except (ProcessLookupError, PermissionError):
+        return
+    end = time.time() + timeout
+    while time.time() < end:
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            return
+        time.sleep(0.5)
+    try:
+        os.kill(pid, signal.SIGKILL)
+    except (ProcessLookupError, PermissionError):
+        pass
+
+
+def start_singbox(binpath):
+    proc = subprocess.Popen([binpath, "run", "-c", CONFIG_PATH])
+    try:
+        with open(PID_FILE, "w", encoding="utf-8") as f:
+            f.write(str(proc.pid))
+    except OSError:  # noqa: BLE001
+        pass
+    return proc
+
+
+def wait_alive(proc, timeout=8):
+    end = time.time() + timeout
+    while time.time() < end:
+        if proc.poll() is not None:
+            return False
+        time.sleep(0.5)
+    return proc.poll() is None
+
+
+def switch_kernel(version, pin=True):
+    """换内核：下载（复用缓存）→ 新二进制 check → 停旧 → 切软链 → 起新 → 验证。
+    新版起不来则回滚旧版并抛错。成功时默认钉住版本（容器重建仍用它）。"""
+    if not version or not VERSION_RE.match(version):
+        raise ValueError("版本号非法（例：v1.15.0-alpha.12 / v1.14.3 / latest）")
+    with _kernel_lock:
+        baked = read_baked_version()
+
+        def _norm(v):
+            return (v or "").strip().lstrip("vV")
+
+        if baked and _norm(version) not in ("latest", "stable") and _norm(version) == _norm(baked):
+            new_bin = os.path.join(BAKED_DIR, baked, "sing-box")
+            if not (os.path.isfile(new_bin) and os.access(new_bin, os.X_OK)):
+                raise RuntimeError("内置内核缺失，无法切换")
+            norm = baked
+            inst_log = "reuse baked"
+        else:
+            new_bin, inst_log = install_kernel(version)
+            norm = os.path.basename(os.path.dirname(new_bin.rstrip("/")))
+        code, chk = singbox_check(CONFIG_PATH, new_bin)
+        if code != 0:
+            raise RuntimeError(f"新内核校验配置失败，未切换：{chk[-1000:]}")
+        old_bin = resolve_current_bin()
+        prev_link = os.path.realpath(BIN_LINK) if os.path.islink(BIN_LINK) else None
+        stop_singbox()
+        try:
+            if os.path.islink(BIN_LINK) or os.path.lexists(BIN_LINK):
+                os.remove(BIN_LINK)
+            os.symlink(new_bin, BIN_LINK)
+        except OSError as e:  # noqa: BLE001
+            log(f"WARN: 更新软链失败（直接用绝对路径启动）：{e}")
+        proc = start_singbox(new_bin)
+        if not wait_alive(proc, 8):
+            log(f"新内核启动失败 exit={proc.poll()}，回滚 {old_bin}")
+            try:
+                if os.path.islink(BIN_LINK) or os.path.lexists(BIN_LINK):
+                    os.remove(BIN_LINK)
+                if prev_link:
+                    os.symlink(prev_link, BIN_LINK)
+            except OSError:  # noqa: BLE001
+                pass
+            p2 = start_singbox(old_bin)
+            ok = wait_alive(p2, 8)
+            raise RuntimeError(f"新内核 {norm} 启动失败，已回滚（旧版{'已恢复' if ok else '恢复也失败，请看容器日志'}）")
+        if pin:
+            write_pinned_version(norm)
+        log(f"内核已切换：{old_bin} -> {new_bin} pid={proc.pid}")
+        return {"ok": True, "version": norm, "bin": new_bin, "pid": proc.pid,
+                "previous": old_bin, "install_log": inst_log[-1500:]}
+
+
+def kernel_info(refresh=False):
+    cur_bin = resolve_current_bin()
+    info = {
+        "current": {"bin": cur_bin, "version": bin_version(cur_bin)},
+        "baked": read_baked_version(),
+        "pinned": read_pinned_version(),
+        "env_want": env("SINGBOX_VERSION", ""),
+        "source": kernel_source(),
+        "cached": list_cached_kernels(),
+        "latest": {"stable": "", "preview": "", "checked_at": "", "error": ""},
+    }
+    rel = fetch_releases(force=refresh)
+    info["latest"] = {
+        "stable": rel.get("stable", ""),
+        "preview": rel.get("preview", ""),
+        "checked_at": (datetime.datetime.fromtimestamp(rel["at"]).isoformat()
+                       if rel.get("at") else ""),
+        "error": rel.get("error", ""),
+    }
+    return info
 
 
 # ---------------- HTTP ----------------
@@ -551,6 +827,15 @@ class Handler(BaseHTTPRequestHandler):
             if not self.authorized():
                 return self.send_json({"error": "unauthorized"}, 401)
             return self.send_json(load_subs())
+        if path == "/api/kernel":
+            if not self.authorized():
+                return self.send_json({"error": "unauthorized"}, 401)
+            qs = parse_qs(urlparse(self.path).query)
+            refresh = (qs.get("refresh", [""])[0] == "1")
+            try:
+                return self.send_json(kernel_info(refresh=refresh))
+            except Exception as e:  # noqa: BLE001
+                return self.send_json({"error": str(e)[:300]}, 500)
         if path == "/api/logs":
             if not self.authorized():
                 return self.send_json({"error": "unauthorized"}, 401)
@@ -624,6 +909,41 @@ class Handler(BaseHTTPRequestHandler):
             except Exception as e:  # noqa: BLE001
                 return self.send_json({"ok": False, "message": f"内部错误: {e}"}, 500)
             return self.send_json(result, 200 if result.get("ok") else 500)
+        if path == "/api/kernel/update":
+            if not self.authorized():
+                return self.send_json({"error": "unauthorized"}, 401)
+            try:
+                body = self.read_json()
+            except json.JSONDecodeError:
+                return self.send_json({"ok": False, "message": "invalid json"}, 400)
+            version = (body.get("version") or "").strip()
+            if not version:
+                return self.send_json({"ok": False, "message": "请填写版本号"}, 400)
+            try:
+                require_panel_source()
+                result = switch_kernel(version, pin=True)
+            except (ValueError, RuntimeError) as e:
+                return self.send_json({"ok": False, "message": str(e)[:1000]}, 500)
+            except Exception as e:  # noqa: BLE001
+                log(f"KERNEL UPDATE EXCEPTION: {e}\n{traceback.format_exc()}")
+                return self.send_json({"ok": False, "message": f"内部错误: {e}"}, 500)
+            return self.send_json(result)
+        if path == "/api/kernel/restore":
+            if not self.authorized():
+                return self.send_json({"error": "unauthorized"}, 401)
+            baked = read_baked_version()
+            if not baked:
+                return self.send_json({"ok": False, "message": "未找到内置版本"}, 500)
+            try:
+                require_panel_source()
+                result = switch_kernel(baked, pin=False)
+                clear_pinned_version()
+            except (ValueError, RuntimeError) as e:
+                return self.send_json({"ok": False, "message": str(e)[:1000]}, 500)
+            except Exception as e:  # noqa: BLE001
+                return self.send_json({"ok": False, "message": f"内部错误: {e}"}, 500)
+            result["unpinned"] = True
+            return self.send_json(result)
         return self.send_json({"error": "not found"}, 404)
 
     def do_PUT(self):
@@ -706,6 +1026,14 @@ label{font-size:13px;color:#8fa0bd}
 <button id="btnSave">保存</button><button class="ghost" id="btnCancel" style="display:none">取消编辑</button>
 </div><small>Clash/V2Ray 明文订阅请先用 subconverter 转成 target=singbox。</small></div>
 <div class="card"><h1 style="font-size:16px">📋 订阅列表</h1><div id="list" style="margin-top:8px">加载中…</div></div>
+<div class="card"><div class="row" style="justify-content:space-between">
+<div><h1 style="font-size:16px">🔧 内核版本</h1><small>切换版本会重启 sing-box（秒级中断），订阅配置不动；成功后自动钉住，重建容器仍用该版本</small></div>
+<div class="row"><button class="ghost" id="btnKernelCheck">检查更新</button></div>
+</div><div id="kernel" style="margin-top:8px"><small>点击检查更新…</small></div>
+<div class="row" style="margin-top:10px">
+<input id="fKernel" placeholder="版本号，如 v1.15.0-alpha.12 / v1.14.3 / latest" style="max-width:300px"/>
+<button id="btnKernelUpdate">更新并切换</button><button class="ghost" id="btnKernelRestore">恢复内置版</button>
+</div></div>
 <div class="card"><h1 style="font-size:16px">🧾 日志</h1><div class="row" style="margin:8px 0"><button class="ghost" id="btnLogs">刷新日志</button></div><pre id="logs">-</pre></div>
 </div>
 <script>
@@ -743,6 +1071,30 @@ btnReload.onclick=async()=>{btnReload.disabled=true;btnReload.textContent='更�
 try{const r=await api('/api/reload',{method:'POST',body:JSON.stringify({fetch:true})});
 alert((r.reloaded?'✅ 热重载成功：':'✅ 配置已更新（'+r.message+'）\\n')+r.message+'\\n节点数:'+(r.count??'-'));refresh();loadLogs();}catch(e){alert('❌ '+e.message);}finally{btnReload.disabled=false;btnReload.textContent='⚡ 立即更新并重载';}};
 btnReloadOnly.onclick=async()=>{try{const r=await api('/api/reload-only',{method:'POST'});alert(r.message);refresh();}catch(e){alert('❌ '+e.message);}};
+async function loadKernel(force){const el=document.getElementById('kernel');
+try{el.innerHTML='<small>查询中…</small>';
+const k=await api('/api/kernel'+(force?'?refresh=1':''));
+const L=k.latest||{};
+const locked=k.source==='compose';
+const dis=locked?'disabled':'';
+const cached=(k.cached||[]).map(c=>`<button class=ghost style="padding:4px 10px" ${c.current||locked?'disabled':''} onclick="switchCached('${esc(c.version)}')">${esc(c.version)}${c.current?' ●':''}</button>`).join(' ')||'<small>无</small>';
+el.innerHTML=`<small>当前: <b>${esc(k.current.version||'?')}</b> <span class=url>${esc(k.current.bin||'')}</span><br/>`
++`控制权: <b>${locked?('compose（'+esc(k.env_want)+'），面板只读':'面板')}</b> · 内置: ${esc(k.baked||'-')} · 钉住: ${esc(k.pinned||'无')}<br/>`
++`最新稳定版: <b>${esc(L.stable||'-')}</b> ${!locked&&L.stable&&k.current.version!==L.stable?'<button style="padding:4px 10px" onclick="switchCached(\\''+esc(L.stable)+'\\')">升级</button>':''}<br/>`
++`最新预览版: <b>${esc(L.preview||'-')}</b> ${!locked&&L.preview?'<button class=ghost style="padding:4px 10px" onclick="switchCached(\\''+esc(L.preview)+'\\')">试用</button>':''}<br/>`
++`已缓存: ${cached}<br/>`
++`<span class=url>上游查询: ${esc(L.checked_at||'未成功')}${L.error?(' · '+esc(L.error.slice(0,100))):''}</span></small>`;
+btnKernelUpdate.disabled=locked;btnKernelRestore.disabled=locked;
+if(locked)el.innerHTML+=`<br/><small style=color:#fbbf24>compose 指定了 SINGBOX_VERSION，版本以 compose 为准；注释掉它并重建容器后才能在面板切换。</small>`;
+}catch(e){el.innerHTML='<small style=color:#f87171>'+esc(e.message)+'</small>';}}
+async function switchCached(v){if(!confirm('切换内核到 '+v+'？sing-box 会重启（秒级中断）。'))return;
+btnKernelUpdate.disabled=true;btnKernelUpdate.textContent='切换中…';
+try{const r=await api('/api/kernel/update',{method:'POST',body:JSON.stringify({version:v})});
+alert('✅ 已切换到 '+r.version+'（pid='+r.pid+'）');refresh();loadKernel(false);loadLogs();}catch(e){alert('❌ '+e.message);}finally{btnKernelUpdate.disabled=false;btnKernelUpdate.textContent='更新并切换';}}
+btnKernelCheck.onclick=()=>loadKernel(true);
+btnKernelUpdate.onclick=()=>{const v=fKernel.value.trim();if(!v)return alert('请填写版本号');fKernel.value='';switchCached(v);};
+btnKernelRestore.onclick=async()=>{if(!confirm('恢复内置版内核？'))return;
+try{const r=await api('/api/kernel/restore',{method:'POST'});alert('✅ 已恢复 '+r.version);refresh();loadKernel(false);}catch(e){alert('❌ '+e.message);}};
 async function loadLogs(){try{const j=await api('/api/logs?n=200');logs.textContent=j.logs.join('\\n')||'(空)';}catch(e){logs.textContent=e.message;}}
 btnLogs.onclick=loadLogs;refresh();loadLogs();setInterval(refresh,15000);
 </script></body></html>"""
