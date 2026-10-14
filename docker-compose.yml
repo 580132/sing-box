@@ -23,10 +23,6 @@ services:
       # GitHub 代理：国内直连 Release 吃力时填，如 https://ghproxy.com/
       # （构建时预装不受影响，只作用于运行时按需下载）
       # GITHUB_PROXY: "https://ghproxy.com/"
-      # 远端 rule-set 下载改写：订阅引用 raw.githubusercontent.com 的规则集下载失败
-      # 导致启动 FATAL 时用。默认自动沿用上面的 GITHUB_PROXY，也可单独指定：
-      # RULESET_MIRROR: "https://ghproxy.com/"
-      # RULESET_DETOUR: "direct"   # rule-set 下载走直连，不经过代理节点
       AUTO_UPDATE_INTERVAL: "6h"     # 定时拉取订阅并热重载；0 关闭
       UPDATE_ON_START: "true"
       TZ: "Asia/Shanghai"

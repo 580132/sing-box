@@ -308,35 +308,6 @@ def merge_config(template, all_outbounds):
     return cfg, remote_tags
 
 
-def rewrite_ruleset_urls(cfg):
-    """远端 rule-set 下载改写，返回 (cfg, (rewrites, detours))。
-
-    背景：订阅常引用 raw.githubusercontent.com 上的 rule-set，直连失败会导致
-    sing-box 启动时 FATAL（check 阶段不下载，只有 run 才爆）。
-    - RULESET_MIRROR：代理前缀（如 https://ghproxy.com），拼到原 url 前；
-      为空时自动沿用 GITHUB_PROXY；仅改写 raw.githubusercontent.com / github.com 开头的地址。
-    - RULESET_DETOUR：给远端 rule-set 设置 download_detour（如 direct），避免下载走代理的先有鸡先有蛋。
-    """
-    mirror = (os.environ.get("RULESET_MIRROR") or os.environ.get("GITHUB_PROXY") or "").rstrip("/")
-    detour = (os.environ.get("RULESET_DETOUR") or "").strip()
-    if not mirror and not detour:
-        return cfg, (0, 0)
-    rewrites = detours = 0
-    for rs in (cfg.get("route", {}).get("rule_set") or []):
-        if not isinstance(rs, dict):
-            continue
-        url = rs.get("url") or ""
-        if mirror and (url.startswith("https://raw.githubusercontent.com/")
-                       or url.startswith("https://github.com/")):
-            rs["url"] = mirror + "/" + url
-            rewrites += 1
-        if detour and ("url" in rs or rs.get("type") == "remote"):
-            if rs.get("download_detour") != detour:
-                rs["download_detour"] = detour
-                detours += 1
-    return cfg, (rewrites, detours)
-
-
 def singbox_check(path):
     r = subprocess.run([SINGBOX_BIN, "check", "-c", path],
                        capture_output=True, text=True, timeout=60)
@@ -451,9 +422,6 @@ def do_update_and_reload(fetch=True, send_hup_signal=True):
                         "message": f"订阅仅为节点片段，但读取模板失败 {TEMPLATE_PATH}，无法合并"}
             cfg, tags = merge_config(template, all_obs)
             apply_mode = "template-merge"
-        cfg, (rs_rewrites, rs_detours) = rewrite_ruleset_urls(cfg)
-        if rs_rewrites or rs_detours:
-            log(f"rule-set 改写：镜像 {rs_rewrites} 条，download_detour={rs_detours} 条")
         os.makedirs(os.path.dirname(os.path.abspath(CONFIG_PATH)) or ".", exist_ok=True)
         tmp = CONFIG_PATH + ".tmp"
         with open(tmp, "w", encoding="utf-8") as f:
@@ -477,7 +445,7 @@ def do_update_and_reload(fetch=True, send_hup_signal=True):
             ok, msg = False, "配置已写入（--update-once，不发送 SIGHUP）"
         result = {"ok": True, "reloaded": ok, "fetch": True, "message": msg,
                   "mode": apply_mode, "tags": tags, "count": len(tags), "details": details,
-                  "rulesets_rewritten": rs_rewrites, "check_output": output[-4000:]}
+                  "check_output": output[-4000:]}
         save_last_update({"at": started, **{k: v for k, v in result.items() if k != "check_output"}})
         return result
 
