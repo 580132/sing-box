@@ -5,7 +5,7 @@ services:
     container_name: sing-box-sub
     restart: unless-stopped
     network_mode: host
-    # host 模式下端口由 config.template.json 的 inbounds 决定（如 7890 mixed / 7891 tproxy）
+    # host 模式下端口由订阅下发的完整配置的 inbounds 决定
     # 如需桥接模式，改用 ports 映射并保证 inbounds listen 在 0.0.0.0
     # ports:
     #   - "8080:8080"   # 管理面板
@@ -17,7 +17,6 @@ services:
       UPDATE_ON_START: "true"
       TZ: "Asia/Shanghai"
     volumes:
-      - ./config/config.template.json:/etc/sing-box/config.template.json:ro
       - ./config/subscriptions.json:/etc/sing-box/subscriptions.json
       - sing-box-cache:/var/cache/sing-box-subs
       # sing-box 运行时生成的 config.json 也落在这里，方便排障：

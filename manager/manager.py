@@ -147,7 +147,11 @@ def fetch_url(url, timeout=30):
 
 
 def try_parse_subscription_config(text):
-    """把订阅文本解析为 (outbounds_list, info_dict)。支持 JSON 明文 / Base64(JSON)。"""
+    """把订阅文本解析为 (outbounds_list, info_dict, raw_obj)。
+
+    支持 JSON 明文 / Base64(JSON)。raw_obj 为解析出的原始 JSON 对象，
+    调用方可据此判断是否为完整配置（见 is_full_config）。
+    """
     s = text.strip()
     if not s:
         raise ValueError("订阅内容为空")
@@ -176,7 +180,7 @@ def try_parse_subscription_config(text):
             last_err = e
             continue
         outbounds, info = extract_outbounds(obj)
-        return outbounds, info
+        return outbounds, info, obj
     #  heuristic: 看起来像 clash yaml？
     head = s[:200].lower()
     if "proxies:" in head or "proxy-groups:" in head or "port:" in head:
@@ -195,6 +199,19 @@ def extract_outbounds(obj):
     raise ValueError("JSON 中未找到 outbounds 数组，也不是单个 outbound 对象")
 
 
+def is_full_config(obj):
+    """判断订阅是否为完整 sing-box 配置（而不仅是 outbounds 片段）。
+
+    完整配置：含 outbounds 数组，且同时含 inbounds 或 route。
+    仅含 {"outbounds": [...]} 的属于节点片段，走模板合并流程。
+    """
+    return (
+        isinstance(obj, dict)
+        and isinstance(obj.get("outbounds"), list)
+        and ("inbounds" in obj or "route" in obj)
+    )
+
+
 def fetch_subscription(sub, timeout=30):
     url = sub["url"]
     raw, final_url = fetch_url(url, timeout=timeout)
@@ -205,10 +222,10 @@ def fetch_subscription(sub, timeout=30):
         text = raw.decode("utf-8")
     except UnicodeDecodeError as e:
         raise ValueError(f"订阅非 UTF-8 文本：{e}") from e
-    outbounds, info = try_parse_subscription_config(text)
+    outbounds, info, obj = try_parse_subscription_config(text)
     if not isinstance(outbounds, list):
         raise ValueError("解析出的 outbounds 不是数组")
-    return outbounds, {"final_url": final_url, "bytes": len(raw), **info}
+    return outbounds, {"final_url": final_url, "bytes": len(raw), **info}, obj
 
 
 # ---------------- 合并与重载 ----------------
@@ -331,19 +348,23 @@ def do_update_and_reload(fetch=True, send_hup_signal=True):
         try:
             template = load_template()
         except Exception as e:  # noqa: BLE001
-            return {"ok": False, "reloaded": False, "message": f"读取模板失败 {TEMPLATE_PATH}: {e}"}
+            template = None
+            log(f"WARN: 读取模板失败 {TEMPLATE_PATH}: {e}（若订阅为完整配置则可忽略）")
 
-        all_obs, details = [], []
+        all_obs, details, full_configs = [], [], []
         for s in enabled:
             try:
-                obs, info = fetch_subscription(s)
+                obs, info, obj = fetch_subscription(s)
                 all_obs.extend(obs)
+                if is_full_config(obj):
+                    full_configs.append(obj)
                 s["last_status"] = "ok"
                 s["last_error"] = ""
                 s["updated_at"] = utcnow_iso()
                 details.append({"id": s["id"], "name": s.get("name"), "ok": True,
-                                "count": len(obs), "bytes": info.get("bytes"), "mode": info.get("mode")})
-                log(f"订阅 OK: {s.get('name')} ({s['id']}) nodes={len(obs)} bytes={info.get('bytes')}")
+                                "count": len(obs), "bytes": info.get("bytes"), "mode": info.get("mode"),
+                                "full_config": is_full_config(obj)})
+                log(f"订阅 OK: {s.get('name')} ({s['id']}) nodes={len(obs)} bytes={info.get('bytes')} full={is_full_config(obj)}")
             except Exception as e:  # noqa: BLE001
                 err = str(e)
                 s["last_status"] = "error"
@@ -359,7 +380,27 @@ def do_update_and_reload(fetch=True, send_hup_signal=True):
             return {"ok": False, "reloaded": False, "details": details,
                     "message": "全部订阅拉取失败，已保留旧配置（置 ALLOW_EMPTY_OUTBOUNDS=true 可强制）"}
 
-        cfg, tags = merge_config(template, all_obs)
+        if full_configs and all_obs:
+            if len(full_configs) == 1 and len([d for d in details if d.get("ok")]) == 1:
+                # 唯一启用的订阅即完整配置：直接采用，不合并模板
+                cfg = copy.deepcopy(full_configs[0])
+                tags = [str(o["tag"]) for o in cfg.get("outbounds", []) if isinstance(o, dict) and "tag" in o]
+                apply_mode = "direct"
+                log(f"订阅为完整配置，直接采用（含 inbounds/route，共 {len(tags)} 个 outbounds）")
+            else:
+                # 多订阅且含完整配置：以第一份完整配置为底座，其余订阅的节点合并进来
+                base = copy.deepcopy(full_configs[0])
+                rest = [o for o in all_obs
+                        if str(o.get("tag")) not in {str(x.get("tag")) for x in base.get("outbounds", []) if isinstance(x, dict)}]
+                cfg, tags = merge_config(base, rest)
+                apply_mode = "full-base-merge"
+                log(f"多订阅混合：以第一份完整配置为底座，合并其余 {len(rest)} 个节点")
+        else:
+            if template is None:
+                return {"ok": False, "reloaded": False, "details": details,
+                        "message": f"订阅仅为节点片段，但读取模板失败 {TEMPLATE_PATH}，无法合并"}
+            cfg, tags = merge_config(template, all_obs)
+            apply_mode = "template-merge"
         os.makedirs(os.path.dirname(os.path.abspath(CONFIG_PATH)) or ".", exist_ok=True)
         tmp = CONFIG_PATH + ".tmp"
         with open(tmp, "w", encoding="utf-8") as f:
@@ -382,7 +423,7 @@ def do_update_and_reload(fetch=True, send_hup_signal=True):
         else:
             ok, msg = False, "配置已写入（--update-once，不发送 SIGHUP）"
         result = {"ok": True, "reloaded": ok, "fetch": True, "message": msg,
-                  "tags": tags, "count": len(tags), "details": details,
+                  "mode": apply_mode, "tags": tags, "count": len(tags), "details": details,
                   "check_output": output[-4000:]}
         save_last_update({"at": started, **{k: v for k, v in result.items() if k != "check_output"}})
         return result
@@ -510,10 +551,11 @@ class Handler(BaseHTTPRequestHandler):
             if not sub:
                 return self.send_json({"error": "not found"}, 404)
             try:
-                obs, info = fetch_subscription(sub)
+                obs, info, obj = fetch_subscription(sub)
                 preview = [str(o.get("tag")) for o in obs[:20] if isinstance(o, dict)]
                 return self.send_json({"ok": True, "count": len(obs), "bytes": info.get("bytes"),
-                                        "mode": info.get("mode"), "preview": preview})
+                                        "mode": info.get("mode"), "full_config": is_full_config(obj),
+                                        "preview": preview})
             except Exception as e:  # noqa: BLE001
                 return self.send_json({"ok": False, "error": str(e)[:1000]}, 502)
         if path == "/api/reload":

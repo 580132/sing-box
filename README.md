@@ -5,9 +5,9 @@
 ## 功能
 
 - 订阅 CRUD（名称 / URL / 启用开关），持久化到 `subscriptions.json`
-- 远程拉取订阅（支持 sing-box JSON 明文 / Base64 编码的 JSON）
-- 合并策略：`config.template.json` 提供 `inbounds / dns / route` 等本地基础配置，
-  远程订阅只取 `outbounds` 合并进来
+- 远程拉取订阅（支持 sing-box 完整配置 JSON 明文 / Base64 编码）
+- **完整配置直接采用**：订阅含 `inbounds`/`route` 时原样写入，不合并模板
+- 多订阅混合：以第一份完整配置为底座，其余订阅的节点合并进来
 - 一键热重载：拉取 → `sing-box check` 校验 → 原子写 `config.json` → `kill -HUP` 热重载
   - 校验失败则保留旧配置并返回错误，不中断现有连接
 - Web 面板（`:8080`）+ REST API，可选 `MANAGER_TOKEN` 鉴权
@@ -16,7 +16,6 @@
 ## 快速开始
 
 ```bash
-cp config/config.template.example.json config/config.template.json
 cp config/subscriptions.example.json config/subscriptions.json
 # 编辑订阅地址
 docker compose up -d --build
@@ -34,7 +33,6 @@ docker-compose.yml
 docker/entrypoint.sh        # 容器启动：初始拉取 -> 后台起 sing-box -> 前台起 manager
 docker/update-subs.sh       # 手动/定时触发更新（容器内执行）
 manager/manager.py          # 零依赖（纯标准库）管理面板 + API
-config/config.template.example.json
 config/subscriptions.example.json
 ```
 
@@ -45,7 +43,7 @@ config/subscriptions.example.json
 | `MANAGER_PORT` | `8080` | 面板端口 |
 | `MANAGER_TOKEN` | 空（不鉴权） | 设置后 API 需 `Authorization: Bearer <token>` 或 `?token=` |
 | `CONFIG_PATH` | `/etc/sing-box/config.json` | sing-box 实际运行配置 |
-| `TEMPLATE_PATH` | `/etc/sing-box/config.template.json` | 本地基础模板 |
+| `TEMPLATE_PATH` | `/etc/sing-box/config.template.json` | 本地基础模板，**仅节点片段模式需要**，完整配置订阅可不提供 |
 | `SUBS_PATH` | `/etc/sing-box/subscriptions.json` | 订阅列表持久化 |
 | `CACHE_DIR` | `/var/cache/sing-box-subs` | 订阅原始内容缓存 |
 | `SINGBOX_BIN` | `sing-box` | sing-box 二进制路径 |
@@ -75,17 +73,16 @@ GET  /api/logs?n=200            manager 日志尾部（排障用）
 curl -H "Authorization: Bearer $MANAGER_TOKEN" http://localhost:8080/api/status
 ```
 
-## 合并策略（重要）
+## 配置应用策略（重要）
 
-1. 读取 `config.template.json` 作为底座。
-2. 依次拉取所有 `enabled=true` 的订阅，解析出 `outbounds[]`。
-   - 内容是 `{...}` JSON → 直接用
-   - 内容是 Base64 → 解码后再按 JSON 解析
-   - 非 JSON（如 Clash YAML）→ 该条标记失败，提示“请用 subconverter 转成 sing-box JSON 后再订阅”
-3. 去重（按 `tag`），合并到模板：
-   - 模板中若有 `tag == "__SUBSCRIPTION__"` 的占位 outbound，则替换为远程 outbounds；
-   - 否则直接追加到 `outbounds` 末尾。
-   - 模板中的 selector（如 `proxy` / `auto`）若 `outbounds` 为空或包含占位符，会自动填入全部远程 tag，保证开箱可用。
+1. 依次拉取所有 `enabled=true` 的订阅（JSON 明文 / Base64，失败的单条标记 `last_error`，不影响其他条）。
+2. **完整配置**（含 `outbounds` 且含 `inbounds` 或 `route`）：
+   - 仅一份启用的完整配置 → **原样直接采用**，不做任何合并；
+   - 多份 → 以第一份完整配置为底座，其余订阅的 `outbounds` 按 `tag` 去重合并进来。
+3. **节点片段**（`outbounds` 数组 / 单个 outbound / 仅 `{"outbounds": [...]}`）：
+   需要 `TEMPLATE_PATH` 模板做底座（模板提供 `inbounds/dns/route`），片段按 `tag` 去重后合并；
+   模板中 `tag == "__SUBSCRIPTION__"` 的占位 outbound 会被替换，`selector`/`urltest` 的占位引用会自动填充。
+   不用此模式可不提供模板。
 4. 写临时文件 → `sing-box check -c tmp` → 通过则原子 `rename` 到 `config.json` → `kill -HUP $(cat /run/sing-box.pid)`。
 
 热重载原理即 sing-box 官方 `SIGHUP` 机制：校验通过后重建实例，老连接不断，新连接走新配置。
@@ -95,7 +92,7 @@ curl -H "Authorization: Bearer $MANAGER_TOKEN" http://localhost:8080/api/status
 
 ```bash
 python3 manager/manager.py --help
-CONFIG_PATH=./.tmp/config.json TEMPLATE_PATH=./config/config.template.example.json \
+CONFIG_PATH=./.tmp/config.json \
   SUBS_PATH=./.tmp/subs.json MANAGER_PORT=8080 python3 manager/manager.py
 ```
 

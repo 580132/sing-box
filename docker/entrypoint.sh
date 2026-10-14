@@ -20,13 +20,12 @@ if [ ! -f "$SUBS_PATH" ]; then
   echo "[entrypoint] created empty $SUBS_PATH"
 fi
 
+# 模板仅为可选项：订阅是完整配置时不需要；只有节点片段模式才用它做底座合并
 if [ ! -f "$TEMPLATE_PATH" ]; then
-  echo "[entrypoint] ERROR: missing template $TEMPLATE_PATH" >&2
-  echo "[entrypoint] 请挂载 config.template.json 到 $TEMPLATE_PATH" >&2
-  exit 1
+  echo "[entrypoint] no template at $TEMPLATE_PATH (optional, full-config subscriptions don't need it)"
 fi
 
-# 启动时先拉取一次订阅生成 config.json（失败则沿用旧 config / 模板兜底）
+# 启动时先拉取一次订阅生成 config.json（失败则沿用旧 config）
 if [ "$UPDATE_ON_START" = "true" ]; then
   echo "[entrypoint] fetching subscriptions before start..."
   if python3 /app/manager/manager.py --update-once; then
@@ -34,13 +33,23 @@ if [ "$UPDATE_ON_START" = "true" ]; then
   else
     echo "[entrypoint] WARN: initial fetch failed, fallback to existing config" >&2
     if [ ! -f "$CONFIG_PATH" ]; then
-      echo "[entrypoint] no existing config, copying template as-is"
-      cp "$TEMPLATE_PATH" "$CONFIG_PATH"
+      if [ -f "$TEMPLATE_PATH" ]; then
+        echo "[entrypoint] no existing config, copying template as-is"
+        cp "$TEMPLATE_PATH" "$CONFIG_PATH"
+      else
+        echo "[entrypoint] ERROR: no config and initial fetch failed (check subscriptions), and no template to fall back to" >&2
+        exit 1
+      fi
     fi
   fi
 else
   if [ ! -f "$CONFIG_PATH" ]; then
-    cp "$TEMPLATE_PATH" "$CONFIG_PATH"
+    if [ -f "$TEMPLATE_PATH" ]; then
+      cp "$TEMPLATE_PATH" "$CONFIG_PATH"
+    else
+      echo "[entrypoint] ERROR: missing $CONFIG_PATH and UPDATE_ON_START=false with no template" >&2
+      exit 1
+    fi
   fi
 fi
 
