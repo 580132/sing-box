@@ -58,6 +58,19 @@ environment:
   GITHUB_PROXY: "https://ghproxy.com/"   # 换成你可用的代理
 ```
 
+## 排障：启动时 FATAL（远端 rule-set 下不动）
+
+`sing-box check` 只验语法不下载远端 rule-set，所以面板显示更新成功，
+`run` 时才下载 `route.rule_set` 里 `url` 指向的文件。若 DNS 或
+`raw.githubusercontent.com` 不通，会报 `lookup ... context deadline exceeded`
+然后 `FATAL ... start router` 退出、无限重启。按顺序排查：
+
+1. 宿主机先测 DNS：`nslookup raw.githubusercontent.com 223.5.5.5`，
+   不通就换订阅里 `dns.servers` 为可达的（如 `223.5.5.5`/`119.29.29.29` 走 `direct`）。
+2. rule-set 下载走镜像（推荐）：设 `RULESET_MIRROR: "https://ghproxy.com/"`
+  （不设则自动沿用 `GITHUB_PROXY`），更新并重载后看日志 `rule-set 改写：镜像 N 条`。
+3. 再加 `RULESET_DETOUR: "direct"` 让下载不经过代理节点，避开先有鸡先有蛋。
+
 > 另外 curl（内核下载）与面板（订阅拉取）都自动识别小写的 `http_proxy`/`https_proxy`/
 > `no_proxy` 环境变量，有自建代理也可直接配那几个。
 
@@ -81,6 +94,8 @@ config/subscriptions.example.json
 | `MANAGER_TOKEN` | 空（不鉴权） | 设置后 API 需 `Authorization: Bearer <token>` 或 `?token=` |
 | `SINGBOX_VERSION` | 空（=内置稳定版） | 运行时内核版本，如 `v1.15.0-alpha.12` / `latest`，自动下载，无需重建镜像 |
 | `GITHUB_PROXY` | 空（直连） | GitHub 代理前缀，如 `https://ghproxy.com/`，拼到 Release 下载地址前（含 `latest` 解析） |
+| `RULESET_MIRROR` | 空（=GITHUB_PROXY） | 远端 rule-set 下载改写前缀，解决 `raw.githubusercontent.com` 下不动导致启动 FATAL |
+| `RULESET_DETOUR` | 空（不动） | 给远端 rule-set 设置 `download_detour`，如 `direct`，避免下载走代理 |
 | `KERNEL_DIR` | `/opt/sing-box/versions` | 运行时下载的内核存放目录（建议挂 volume 持久化） |
 | `CONFIG_PATH` | `/etc/sing-box/config.json` | sing-box 实际运行配置 |
 | `TEMPLATE_PATH` | `/etc/sing-box/config.template.json` | 本地基础模板，**仅节点片段模式需要**，完整配置订阅可不提供 |
