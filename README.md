@@ -150,21 +150,6 @@ ls -l /dev/net/tun || sudo modprobe tun   # 没有就加载内核模块
 
 > 不用 TUN 的话把 compose 里 `cap_add`/`devices` 两节删掉即可。
 
-## Macvlan 模式
-
-TUN 在 host 网络下抢宿主路由表时，可切 macvlan 让容器拿独立 LAN IP、独立 netns：
-
-```bash
-ip route show default   # 查 parent 网卡名（dev 后面那个）
-# 挑个 LAN 空闲 IP：ping 一下不通、路由器后台也看不到的就行
-```
-
-然后按 `docker-compose.yml` 里注释填 `parent / subnet / gateway / ipv4_address`，
-注释掉 `network_mode: host`，`docker compose up -d --force-recreate`。
-
-端口映射在 macvlan 下无效（无 NAT），面板直接 `http://容器IP:8088`。另两个坑：
-宿主机直连不通容器 IP（用 LAN 内别的设备访问面板），以及记得配 `dns`（示例已带）。
-
 订阅是远端完整配置、不方便手改时，用 `TUN_EXCLUDE`（逗号分隔 CIDR）让面板在每次
 更新订阅时自动并入 tun 入站的 `route_exclude_address`，防止 `auto_route` 吞掉内网
 DNS/网关（典型症状：启动时 `lookup ... deadline exceeded` 接着 FATAL）：
