@@ -18,9 +18,11 @@ import base64
 import binascii
 import copy
 import datetime
+import errno
 import json
 import os
 import re
+import shutil
 import signal
 import subprocess
 import sys
@@ -97,12 +99,31 @@ def load_subs():
     return []
 
 
+def safe_replace(tmp, dst):
+    """原子替换，兼容单文件 bind 挂载（rename 到挂载点会报 EBUSY）。
+
+    bind 挂载的单个文件是挂载点，os.replace 会抛
+    OSError(EBUSY, 'Resource busy')，此时退化为原地覆盖写入。
+    """
+    try:
+        os.replace(tmp, dst)
+    except OSError as e:
+        if e.errno in (errno.EBUSY, errno.EPERM, errno.EXDEV, errno.EINVAL):
+            shutil.copyfile(tmp, dst)
+            try:
+                os.remove(tmp)
+            except OSError:  # noqa: BLE001
+                pass
+        else:
+            raise
+
+
 def save_subs(subs):
     os.makedirs(os.path.dirname(os.path.abspath(SUBS_PATH)), exist_ok=True)
     tmp = SUBS_PATH + ".tmp"
     with open(tmp, "w", encoding="utf-8") as f:
         json.dump(subs, f, ensure_ascii=False, indent=2)
-    os.replace(tmp, SUBS_PATH)
+    safe_replace(tmp, SUBS_PATH)
 
 
 def new_id():
@@ -415,8 +436,8 @@ def do_update_and_reload(fetch=True, send_hup_signal=True):
                               "message": "sing-box check 失败，未替换配置", "check_output": output[-4000:]})
             return {"ok": False, "reloaded": False, "details": details,
                     "message": "新配置校验失败，已保留旧配置", "check_output": output[-4000:]}
-        os.replace(tmp, CONFIG_PATH)
-        log(f"配置已更新并通过校验：outbounds={len(tags)}")
+        safe_replace(tmp, CONFIG_PATH)
+        log(f"配置已更新并通过校验：outbounds={len(tags)} mode={apply_mode}")
 
         if send_hup_signal:
             ok, msg = send_hup()
