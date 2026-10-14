@@ -20,6 +20,9 @@ services:
       # 内核版本：不填=镜像内置稳定版；填版本号则启动时自动下载，无需重建镜像
       # SINGBOX_VERSION: "v1.15.0-alpha.12"
       # SINGBOX_VERSION: "latest"   # 最新稳定版
+      # GitHub 代理：国内直连 Release 吃力时填，如 https://ghproxy.com/
+      # （构建时预装不受影响，只作用于运行时按需下载）
+      # GITHUB_PROXY: "https://ghproxy.com/"
       AUTO_UPDATE_INTERVAL: "6h"     # 定时拉取订阅并热重载；0 关闭
       UPDATE_ON_START: "true"
       TZ: "Asia/Shanghai"

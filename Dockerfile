@@ -21,6 +21,7 @@ RUN chmod +x /app/docker/install-kernel.sh /app/docker/entrypoint.sh /usr/local/
 
 ENV BAKED_SINGBOX_VERSION=${BAKED_SINGBOX_VERSION} \
     SINGBOX_VERSION="" \
+    GITHUB_PROXY="" \
     KERNEL_DIR=/opt/sing-box/versions \
     MANAGER_PORT=8080 \
     CONFIG_PATH=/etc/sing-box/config.json \

@@ -50,6 +50,17 @@ docker exec sing-box-sub sing-box version
 
 构建时换内置版本（一般不需要）：`docker compose build --build-arg BAKED_SINGBOX_VERSION=v1.14.3`。
 
+国内服务器直连 GitHub Release 慢/超时，加 `GITHUB_PROXY`（代理前缀拼到下载地址前）：
+
+```yaml
+environment:
+  SINGBOX_VERSION: "v1.15.0-alpha.12"
+  GITHUB_PROXY: "https://ghproxy.com/"   # 换成你可用的代理
+```
+
+> 另外 curl（内核下载）与面板（订阅拉取）都自动识别小写的 `http_proxy`/`https_proxy`/
+> `no_proxy` 环境变量，有自建代理也可直接配那几个。
+
 ## 目录结构
 
 ```
@@ -69,6 +80,7 @@ config/subscriptions.example.json
 | `MANAGER_PORT` | `8080` | 面板端口 |
 | `MANAGER_TOKEN` | 空（不鉴权） | 设置后 API 需 `Authorization: Bearer <token>` 或 `?token=` |
 | `SINGBOX_VERSION` | 空（=内置稳定版） | 运行时内核版本，如 `v1.15.0-alpha.12` / `latest`，自动下载，无需重建镜像 |
+| `GITHUB_PROXY` | 空（直连） | GitHub 代理前缀，如 `https://ghproxy.com/`，拼到 Release 下载地址前（含 `latest` 解析） |
 | `KERNEL_DIR` | `/opt/sing-box/versions` | 运行时下载的内核存放目录（建议挂 volume 持久化） |
 | `CONFIG_PATH` | `/etc/sing-box/config.json` | sing-box 实际运行配置 |
 | `TEMPLATE_PATH` | `/etc/sing-box/config.template.json` | 本地基础模板，**仅节点片段模式需要**，完整配置订阅可不提供 |

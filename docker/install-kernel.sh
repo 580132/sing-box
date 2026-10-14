@@ -7,17 +7,33 @@
 #   dest-dir: 默认 /opt/sing-box/versions
 # 安装到 <dest-dir>/<version>/sing-box；最终二进制路径打印到 stdout（日志走 stderr）。
 # 同版本已存在且可运行则直接复用（FORCE=1 强制重下）。
-# 可选环境变量：SINGBOX_ARCH（覆盖架构检测）、SINGBOX_LIBC（默认 musl）、FORCE。
+# 可选环境变量：SINGBOX_ARCH（覆盖架构检测）、SINGBOX_LIBC（默认 musl）、FORCE、
+#   GITHUB_PROXY（GitHub 代理/镜像前缀，如 https://ghproxy.com/，自动拼到下载地址前）。
 set -eu
 
 VERSION="${1:?usage: install-kernel.sh <version> [dest-dir]}"
 DEST_DIR="${2:-/opt/sing-box/versions}"
 
+# 代理前缀归一化：去掉末尾 /，使用时再拼（https://ghproxy.com + /https://github.com/...）
+GH_PROXY="${GITHUB_PROXY:-}"
+case "$GH_PROXY" in "" ) ;; */) GH_PROXY="${GH_PROXY%/}";; esac
+
 log() { echo "[install-kernel] $*" >&2; }
 
+resolve_latest() {
+  if [ -n "$GH_PROXY" ]; then
+    # 走代理：releases/latest 会 302 到 releases/tag/<tag>，取最终地址尾段
+    EFF="$(curl -fsSL --max-time 20 -o /dev/null -w '%{url_effective}' "$GH_PROXY/https://github.com/SagerNet/sing-box/releases/latest")"
+    TAG="${EFF##*/}"
+    case "$TAG" in v*|*.*) echo "$TAG"; return 0;; esac
+    return 1
+  fi
+  curl -fsSL --max-time 20 https://api.github.com/repos/SagerNet/sing-box/releases/latest | grep -m1 '"tag_name"' | cut -d'"' -f4
+}
+
 if [ "$VERSION" = "latest" ] || [ "$VERSION" = "stable" ]; then
-  log "resolving latest stable via GitHub API..."
-  TAG="$(curl -fsSL --max-time 20 https://api.github.com/repos/SagerNet/sing-box/releases/latest | grep -m1 '"tag_name"' | cut -d'"' -f4)"
+  log "resolving latest stable..."
+  TAG="$(resolve_latest)"
   [ -n "${TAG:-}" ] || { log "ERROR: cannot resolve latest version"; exit 1; }
   VERSION="$TAG"
 fi
@@ -53,6 +69,10 @@ fi
 
 ASSET="sing-box-${VER}-linux-${ARCH}-${LIBC}.tar.gz"
 URL="https://github.com/SagerNet/sing-box/releases/download/${VERSION}/${ASSET}"
+if [ -n "$GH_PROXY" ]; then
+  URL="$GH_PROXY/$URL"
+  log "using GitHub proxy: $GH_PROXY"
+fi
 log "downloading $URL"
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT INT TERM
