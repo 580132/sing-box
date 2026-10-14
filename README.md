@@ -17,11 +17,16 @@
 
 ```bash
 cp config/subscriptions.example.json config/subscriptions.json
-# 编辑订阅地址
+# 编辑订阅地址（vim config/subscriptions.json）
 docker compose up -d --build
 # 打开面板
 xdg-open http://localhost:8080
 ```
+
+> compose 用的是 `./config:/etc/sing-box` 整个目录挂载，不要改成单文件挂载
+>（如 `.../config.json:/etc/sing-box/config.json`）：宿主文件不存在时 docker 会建出
+> 同名目录，启动即报 `not a directory`。目录挂载无此问题，`config.json` 由容器
+> 启动时拉取订阅自动生成。
 
 点击面板右上角 **立即更新并重载** 即完成：远程加载订阅并热重载。
 

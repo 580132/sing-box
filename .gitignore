@@ -1,4 +1,6 @@
 __pycache__/
 .tmp/
-data/config.json
+data/
+config/config.json
+config/config.json.tmp
 *.pyc

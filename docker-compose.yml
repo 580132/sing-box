@@ -17,10 +17,10 @@ services:
       UPDATE_ON_START: "true"
       TZ: "Asia/Shanghai"
     volumes:
-      - ./config/subscriptions.json:/etc/sing-box/subscriptions.json
+      # 整个目录挂载：避免单文件 bind 在宿主文件不存在时被 docker 建成目录导致挂载失败；
+      # 容器生成的 config.json / config.json.tmp 会落到 ./config 下，方便排障
+      - ./config:/etc/sing-box
       - sing-box-cache:/var/cache/sing-box-subs
-      # sing-box 运行时生成的 config.json 也落在这里，方便排障：
-      - ./data/config.json:/etc/sing-box/config.json
     logging:
       driver: json-file
       options:
