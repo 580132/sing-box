@@ -36,6 +36,8 @@ xdg-open http://localhost:8080
 下载（musl 包），缓存在 `sing-box-kernel` volume 里。**版本控制权二选一、互斥：**
 
 - compose 里写了 `SINGBOX_VERSION` → 以 compose 为准，面板只显示不给换；
+  且本地已有更新版本（面板钉住/缓存）时默认不降级下载，
+  `ALLOW_KERNEL_DOWNGRADE=1` 可强制降级；
 - 注释掉它 → 归面板管：面板「🔧 内核版本」卡片点「检查更新」看最新稳定/预览版，
   一键切换（下载→新二进制 check→重启 sing-box→失败自动回滚旧版），成功后自动钉住，
   容器重建仍用该版本；「恢复内置版」解除钉住。
@@ -79,6 +81,7 @@ config/subscriptions.example.json
 | `MANAGER_PORT` | `8080` | 面板端口 |
 | `MANAGER_TOKEN` | 空（不鉴权） | 设置后 API 需 `Authorization: Bearer <token>` 或 `?token=` |
 | `SINGBOX_VERSION` | 空（=面板接管） | 写死则 compose 接管版本，面板只读；注释掉则归面板切换+钉住 |
+| `ALLOW_KERNEL_DOWNGRADE` | 空（不降级） | 置 `1` 才允许按 compose 低版本降级；默认本地有更新版时跳过下载 |
 | `GITHUB_TOKEN` | 空 | GitHub API token，面板查最新版限流时提额度 |
 | `GITHUB_PROXY` | 空（直连） | GitHub 代理前缀，如 `https://ghproxy.com/`，拼到 Release 下载地址前（含 `latest` 解析） |
 | `TUN_EXCLUDE` | 空 | 逗号分隔的 CIDR，自动并入 tun 入站 `route_exclude_address`（防 `auto_route` 吞内网 DNS） |

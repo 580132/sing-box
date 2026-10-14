@@ -11,6 +11,7 @@ RUN apk add --no-cache python3 curl ca-certificates tzdata procps tar gzip && \
              /opt/sing-box/baked /opt/sing-box/versions
 
 COPY docker/install-kernel.sh /app/docker/install-kernel.sh
+COPY docker/verlib.sh /app/docker/verlib.sh
 COPY manager/manager.py /app/manager/manager.py
 COPY docker/entrypoint.sh /app/docker/entrypoint.sh
 COPY docker/update-subs.sh /usr/local/bin/update-subs
@@ -23,6 +24,7 @@ ENV BAKED_SINGBOX_VERSION=${BAKED_SINGBOX_VERSION} \
     SINGBOX_VERSION="" \
     GITHUB_PROXY="" \
     GITHUB_TOKEN="" \
+    ALLOW_KERNEL_DOWNGRADE="" \
     TUN_EXCLUDE="" \
     KERNEL_DIR=/opt/sing-box/versions \
     MANAGER_PORT=8080 \

@@ -2,7 +2,8 @@
 # 下载并安装指定版本 sing-box 内核（musl 包，适配 alpine）。
 # 构建时与运行时共用：Dockerfile 用它预装默认稳定版，entrypoint 用它按需拉取其他版本。
 #
-# 用法： install-kernel.sh <version> [dest-dir]
+# 用法： install-kernel.sh [--resolve-tag] <version> [dest-dir]
+#   --resolve-tag：只解析并打印规范化后的 tag（latest/stable 走网络解析），不下载
 #   version:  v1.14.3 / 1.14.3 / v1.15.0-alpha.12 / latest（最新稳定版，走 GitHub API 解析）
 #   dest-dir: 默认 /opt/sing-box/versions
 # 安装到 <dest-dir>/<version>/sing-box；最终二进制路径打印到 stdout（日志走 stderr）。
@@ -11,7 +12,12 @@
 #   GITHUB_PROXY（GitHub 代理/镜像前缀，如 https://ghproxy.com/，自动拼到下载地址前）。
 set -eu
 
-VERSION="${1:?usage: install-kernel.sh <version> [dest-dir]}"
+RESOLVE_ONLY=0
+if [ "${1:-}" = "--resolve-tag" ]; then
+  RESOLVE_ONLY=1
+  shift
+fi
+VERSION="${1:?usage: install-kernel.sh [--resolve-tag] <version> [dest-dir]}"
 DEST_DIR="${2:-/opt/sing-box/versions}"
 
 # 代理前缀归一化：去掉末尾 /，使用时再拼（https://ghproxy.com + /https://github.com/...）
@@ -39,6 +45,11 @@ if [ "$VERSION" = "latest" ] || [ "$VERSION" = "stable" ]; then
 fi
 case "$VERSION" in v*) ;; *) VERSION="v$VERSION";; esac
 VER="${VERSION#v}"
+
+if [ "$RESOLVE_ONLY" = "1" ]; then
+  echo "$VERSION"
+  exit 0
+fi
 
 if [ -n "${SINGBOX_ARCH:-}" ]; then
   ARCH="$SINGBOX_ARCH"

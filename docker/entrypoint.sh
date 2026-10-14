@@ -18,6 +18,7 @@ mkdir -p "$(dirname "$CONFIG_PATH")" "$(dirname "$SUBS_PATH")" "$CACHE_DIR" /var
 # ---- 内核版本解析：SINGBOX_VERSION（compose）> pinned（面板钉住）> 内置稳定版 ----
 # compose 写了版本就以 compose 为准（面板此时拒绝切换，不冲突）；
 # compose 没写时，面板钉住的版本在重建后依然生效。
+. /app/docker/verlib.sh
 BAKED_VER="$(cat /opt/sing-box/baked/VERSION 2>/dev/null || echo "${BAKED_SINGBOX_VERSION:-v1.14.3}")"
 PINNED_VER="$(cat "${KERNEL_DIR:-/opt/sing-box/versions}/pinned" 2>/dev/null || true)"
 if [ -n "${SINGBOX_VERSION:-}" ]; then
@@ -26,6 +27,25 @@ elif [ -n "$PINNED_VER" ]; then
   WANT_VER="$PINNED_VER"
 else
   WANT_VER="$BAKED_VER"
+fi
+# ---- 防倒退：本地已有（内置+缓存）更新版本时，不下载低版本 ----
+# 例：面板钉住/缓存了 v1.15.0-alpha.12，compose 写 v1.14.3 → 继续用 alpha.12。
+# 如需强制降级：ALLOW_KERNEL_DOWNGRADE=1。
+case "$WANT_VER" in
+  latest|stable)
+    WANT_RESOLVED="$(/app/docker/install-kernel.sh --resolve-tag "$WANT_VER" 2>/dev/null || true)"
+    if [ -z "$WANT_RESOLVED" ]; then
+      echo "[entrypoint] WARN: cannot resolve $WANT_VER (offline?), keeping newest local" >&2
+    fi;;
+  *) case "$WANT_VER" in v*|V*) WANT_RESOLVED="$WANT_VER";; *) WANT_RESOLVED="v$WANT_VER";; esac;;
+esac
+CUR_VER="$(newest_local "${KERNEL_DIR:-/opt/sing-box/versions}" "$BAKED_VER")"
+if [ -n "${WANT_RESOLVED:-}" ] && [ -z "${ALLOW_KERNEL_DOWNGRADE:-}" ] \
+   && [ "$(vercmp "$CUR_VER" "$WANT_RESOLVED")" = "1" ]; then
+  echo "[entrypoint] current kernel $CUR_VER newer than wanted $WANT_RESOLVED, keeping current (set ALLOW_KERNEL_DOWNGRADE=1 to force downgrade)"
+  WANT_VER="$CUR_VER"
+elif [ -n "${WANT_RESOLVED:-}" ]; then
+  WANT_VER="$WANT_RESOLVED"
 fi
 if [ "$WANT_VER" = "$BAKED_VER" ]; then
   KERNEL_BIN="/opt/sing-box/baked/$BAKED_VER/sing-box"
