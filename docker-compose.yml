@@ -9,6 +9,13 @@ services:
     container_name: sing-box-sub
     restart: unless-stopped
     network_mode: host
+    # TUN 模式必需：创建 tun 接口、配地址/路由要 NET_ADMIN；
+    # 把宿主 /dev/net/tun 映射进来（宿主没有就先 modprobe tun）。
+    # 不用 TUN 可删掉这两项。
+    cap_add:
+      - NET_ADMIN
+    devices:
+      - /dev/net/tun:/dev/net/tun
     # host 模式下端口由订阅下发的完整配置的 inbounds 决定
     # 如需桥接模式，改用 ports 映射并保证 inbounds listen 在 0.0.0.0
     # ports:

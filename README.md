@@ -136,6 +136,19 @@ CONFIG_PATH=./.tmp/config.json \
   SUBS_PATH=./.tmp/subs.json MANAGER_PORT=8080 python3 manager/manager.py
 ```
 
+## TUN 模式
+
+订阅是 TUN 入站时，compose 已配好必需项（`cap_add: NET_ADMIN` + `/dev/net/tun`
+设备映射），`network_mode: host` 下照样需要这两项。宿主机检查：
+
+```bash
+ls -l /dev/net/tun || sudo modprobe tun   # 没有就加载内核模块
+# 做网关给别的设备用时，再开宿主转发：
+# sudo sysctl -w net.ipv4.ip_forward=1
+```
+
+> 不用 TUN 的话把 compose 里 `cap_add`/`devices` 两节删掉即可。
+
 ## 注意事项
 
 - 订阅 URL 必须直接返回 **sing-box JSON**（或其 Base64）。机场普遍给的是 Clash / V2Ray 明文，
