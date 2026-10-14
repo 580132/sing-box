@@ -1133,14 +1133,18 @@ try{el.innerHTML='<small>查询中…</small>';
 const k=await api('/api/kernel'+(force?'?refresh=1':''));
 const L=k.latest||{};
 const managed=k.source==='compose';
-const cached=(k.cached||[]).map(c=>`<button class=ghost style="padding:4px 10px" ${c.current?'disabled':''} onclick="switchCached('${esc(c.version)}')">${esc(c.version)}${c.current?' ●':''}</button>`).join(' ')||'<small>无</small>';
-el.innerHTML=`<small>当前: <b>${esc(k.current.version||'?')}</b> <span class=url>${esc(k.current.bin||'')}</span><br/>`
-+`基线: <b>${managed?('compose（'+esc(k.env_want)+'，仅允许升级）':'面板')}</b> · 内置: ${esc(k.baked||'-')} · 钉住: ${esc(k.pinned||'无')}<br/>`
-+`最新稳定版: <b>${esc(L.stable||'-')}</b> ${L.stable&&k.current.version!==L.stable?'<button style="padding:4px 10px" onclick="switchCached(\\''+esc(L.stable)+'\\')">升级</button>':''}<br/>`
-+`最新预览版: <b>${esc(L.preview||'-')}</b> ${L.preview?'<button class=ghost style="padding:4px 10px" onclick="switchCached(\\''+esc(L.preview)+'\\')">试用</button>':''}<br/>`
-+`已缓存: ${cached}<br/>`
-+`<span class=url>上游查询: ${esc(L.checked_at||'未成功')}${L.error?(' · '+esc(L.error.slice(0,100))):''}</span></small>`;
+const kvBtn=(v,label,primary,disabled)=>'<button class="'+(primary?'':'ghost')+'" style="padding:4px 10px"'+(disabled?' disabled':'')+' data-kv="'+esc(v)+'">'+esc(label)+'</button>';
+let h='<small>当前: <b>'+esc(k.current.version||'?')+'</b> <span class=url>'+esc(k.current.bin||'')+'</span><br/>';
+h+='基线: <b>'+(managed?('compose（'+esc(k.env_want)+'，仅允许升级）'):'面板')+'</b> · 内置: '+esc(k.baked||'-')+' · 钉住: '+esc(k.pinned||'无')+'<br/>';
+h+='最新稳定版: <b>'+esc(L.stable||'-')+'</b> ';
+if(L.stable&&k.current.version!==L.stable)h+=kvBtn(L.stable,'升级',true,false);
+h+='<br/>最新预览版: <b>'+esc(L.preview||'-')+'</b> ';
+if(L.preview)h+=kvBtn(L.preview,'试用',false,false);
+h+='<br/>已缓存: '+((k.cached||[]).map(c=>kvBtn(c.version,c.version+(c.current?' ●':''),false,c.current)).join(' ')||'无')+'<br/>';
+h+='<span class=url>上游查询: '+esc(L.checked_at||'未成功')+(L.error?(' · '+esc(L.error.slice(0,100))):'')+'</span></small>';
+el.innerHTML=h;
 }catch(e){el.innerHTML='<small style=color:#f87171>'+esc(e.message)+'</small>';}}
+document.getElementById('kernel').addEventListener('click',e=>{const b=e.target.closest('[data-kv]');if(b&&!b.disabled)switchCached(b.getAttribute('data-kv'));});
 async function switchCached(v){if(!confirm('切换内核到 '+v+'？sing-box 会重启（秒级中断）。'))return;
 btnKernelUpdate.disabled=true;btnKernelUpdate.textContent='切换中…';
 try{const r=await api('/api/kernel/update',{method:'POST',body:JSON.stringify({version:v})});

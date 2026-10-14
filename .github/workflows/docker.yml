@@ -22,6 +22,11 @@ jobs:
       - name: Python syntax check
         run: python3 -m py_compile manager/manager.py
 
+      - name: Web UI syntax check
+        run: |
+          python3 -c "import re;src=open('manager/manager.py',encoding='utf-8').read();open('/tmp/ui.js','w',encoding='utf-8').write(re.search(r'<script>(.*)</script>',src,re.S).group(1))"
+          node --check /tmp/ui.js && echo UI_JS_OK
+
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v3
 
