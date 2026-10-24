@@ -512,11 +512,21 @@ def pin_path():
 
 
 def read_baked_version():
+    """内置版本：优先 VERSION 文件，其次目录名，最后构建参数默认值。"""
     try:
         with open(os.path.join(BAKED_DIR, "VERSION"), "r", encoding="utf-8") as f:
-            return f.read().strip()
+            v = f.read().strip()
+            if v:
+                return v
     except OSError:
-        return env("BAKED_SINGBOX_VERSION", "")
+        pass
+    try:
+        for name in sorted(os.listdir(BAKED_DIR)):
+            if os.path.isfile(os.path.join(BAKED_DIR, name, "sing-box")):
+                return name if name.startswith("v") else "v" + name
+    except OSError:
+        pass
+    return env("BAKED_SINGBOX_VERSION", "")
 
 
 def kernel_source():
@@ -1068,6 +1078,26 @@ table{width:100%;border-collapse:collapse;font-size:14px}th,td{padding:10px 8px;
 .url{color:#8fa0bd;word-break:break-all;font-size:12px}pre{background:#0b1120;padding:12px;border-radius:8px;overflow:auto;max-height:300px;font-size:12px}
 .grid{display:grid;grid-template-columns:1fr 1fr;gap:10px}@media(max-width:640px){.grid{grid-template-columns:1fr}}
 label{font-size:13px;color:#8fa0bd}
+.kgrid{display:grid;grid-template-columns:repeat(4,1fr);gap:10px}
+@media(max-width:760px){.kgrid{grid-template-columns:repeat(2,1fr)}}
+.kbox{background:#0f172a;border:1px solid #26314a;border-radius:10px;padding:10px 12px}
+.klabel{font-size:12px;color:#8fa0bd;margin-bottom:4px}
+.kval{font-size:15px;font-weight:600;word-break:break-all}
+.ksub{font-size:11px;color:#8fa0bd;margin-top:3px;word-break:break-all}
+.khint{border-radius:8px;padding:9px 12px;margin-top:12px;font-size:13px;background:#1e293b;border-left:3px solid #3b82f6}
+.khint.up{background:#052e2b;border-left-color:#10b981}
+.khint.warn{background:#3f2d10;border-left-color:#f59e0b}
+.kbar-wrap{height:4px;background:#0f172a;border-radius:3px;margin-top:12px;overflow:hidden;display:none}
+.kbar{height:100%;width:0;background:linear-gradient(90deg,#3b82f6,#22d3ee);transition:width .4s}
+.kbar.run{display:block;animation:kpulse 1.2s ease-in-out infinite}
+@keyframes kpulse{0%{width:8%}50%{width:85%}100%{width:96%}}
+.ktags{display:flex;flex-wrap:wrap;gap:8px;margin-top:8px}
+.ktag{display:flex;align-items:center;gap:6px;background:#0f172a;border:1px solid #2a3650;border-radius:8px;padding:6px 10px;font-size:13px;cursor:pointer}
+.ktag:hover{border-color:#3b82f6}
+.ktag.cur{border-color:#10b981;cursor:default}
+.ktag.locked{opacity:.45;cursor:not-allowed}
+.ktag .dot{width:6px;height:6px;border-radius:50%;background:#64748b}
+.ktag.cur .dot{background:#10b981}
 </style></head><body><div class="wrap">
 <div class="card"><div class="row" style="justify-content:space-between">
 <div><h1>📡 sing-box 订阅管理</h1><small>远程拉取订阅 → 校验 → SIGHUP 热重载，老连接不断</small></div>
@@ -1084,13 +1114,26 @@ label{font-size:13px;color:#8fa0bd}
 </div><small>Clash/V2Ray 明文订阅请先用 subconverter 转成 target=singbox。</small></div>
 <div class="card"><h1 style="font-size:16px">📋 订阅列表</h1><div id="list" style="margin-top:8px">加载中…</div></div>
 <div class="card"><div class="row" style="justify-content:space-between">
-<div><h1 style="font-size:16px">🔧 内核版本</h1><small>切换版本会重启 sing-box（秒级中断），订阅配置不动；成功后自动钉住，重建容器仍用该版本</small></div>
-<div class="row"><button class="ghost" id="btnKernelCheck">检查更新</button></div>
-</div><div id="kernel" style="margin-top:8px"><small>点击检查更新…</small></div>
-<div class="row" style="margin-top:10px">
-<input id="fKernel" placeholder="版本号，如 v1.15.0-alpha.12 / v1.14.3 / latest" style="max-width:300px"/>
-<button id="btnKernelUpdate">更新并切换</button><button class="ghost" id="btnKernelRestore">恢复内置版</button>
-</div></div>
+<div><h1 style="font-size:16px">🔧 内核版本</h1><small>切换会重启 sing-box（秒级中断），订阅配置不受影响；成功后自动钉住，重建容器仍用该版本</small></div>
+<div class="row"><button class="ghost" id="btnKernelCheck">⟳ 检查更新</button></div>
+</div>
+<div class="kgrid" style="margin-top:12px">
+<div class="kbox"><div class="klabel">当前运行</div><div class="kval" id="kCurrent">-</div><div class="ksub" id="kCurrentBin">-</div></div>
+<div class="kbox"><div class="klabel">版本基线</div><div class="kval" id="kBase">-</div><div class="ksub" id="kBaseSub">-</div></div>
+<div class="kbox"><div class="klabel">最新稳定版</div><div class="kval" id="kStable">-</div><div class="ksub" id="kStableSub">-</div></div>
+<div class="kbox"><div class="klabel">最新预览版</div><div class="kval" id="kPreview">-</div><div class="ksub" id="kPreviewSub">-</div></div>
+</div>
+<div id="kHint" class="khint" style="display:none"></div>
+<div class="kbar-wrap"><div class="kbar" id="kBar"></div></div>
+<div class="row" style="margin-top:12px;align-items:flex-end">
+<div style="flex:1;min-width:200px"><label>指定版本（可填 latest）</label>
+<input id="fKernel" list="kVersions" placeholder="v1.15.0-alpha.12 / v1.14.3 / latest"/>
+<datalist id="kVersions"></datalist></div>
+<div class="row"><button id="btnKernelUpdate">更新并切换</button><button class="ghost" id="btnKernelRestore">恢复内置版</button></div>
+</div>
+<div style="margin-top:14px"><div class="klabel">可选版本（点击即切换）</div><div id="kTags" class="ktags">加载中…</div></div>
+<div style="margin-top:12px"><div class="klabel">最近操作</div><pre id="kLog" style="max-height:140px;margin:6px 0 0">-</pre></div>
+</div>
 <div class="card"><h1 style="font-size:16px">🧾 日志</h1><div class="row" style="margin:8px 0"><button class="ghost" id="btnLogs">刷新日志</button></div><pre id="logs">-</pre></div>
 </div>
 <script>
@@ -1128,31 +1171,80 @@ btnReload.onclick=async()=>{btnReload.disabled=true;btnReload.textContent='更�
 try{const r=await api('/api/reload',{method:'POST',body:JSON.stringify({fetch:true})});
 alert((r.reloaded?'✅ 热重载成功：':'✅ 配置已更新（'+r.message+'）\\n')+r.message+'\\n节点数:'+(r.count??'-'));refresh();loadLogs();}catch(e){alert('❌ '+e.message);}finally{btnReload.disabled=false;btnReload.textContent='⚡ 立即更新并重载';}};
 btnReloadOnly.onclick=async()=>{try{const r=await api('/api/reload-only',{method:'POST'});alert(r.message);refresh();}catch(e){alert('❌ '+e.message);}};
-async function loadKernel(force){const el=document.getElementById('kernel');
-try{el.innerHTML='<small>查询中…</small>';
+async function loadKernel(force){
+const keep=document.getElementById('kLog').textContent;
+try{
 const k=await api('/api/kernel'+(force?'?refresh=1':''));
-const L=k.latest||{};
-const managed=k.source==='compose';
-const kvBtn=(v,label,primary,disabled)=>'<button class="'+(primary?'':'ghost')+'" style="padding:4px 10px"'+(disabled?' disabled':'')+' data-kv="'+esc(v)+'">'+esc(label)+'</button>';
-let h='<small>当前: <b>'+esc(k.current.version||'?')+'</b> <span class=url>'+esc(k.current.bin||'')+'</span><br/>';
-h+='基线: <b>'+(managed?('compose（'+esc(k.env_want)+'，仅允许升级）'):'面板')+'</b> · 内置: '+esc(k.baked||'-')+' · 钉住: '+esc(k.pinned||'无')+'<br/>';
-h+='最新稳定版: <b>'+esc(L.stable||'-')+'</b> ';
-if(L.stable&&k.current.version!==L.stable)h+=kvBtn(L.stable,'升级',true,false);
-h+='<br/>最新预览版: <b>'+esc(L.preview||'-')+'</b> ';
-if(L.preview)h+=kvBtn(L.preview,'试用',false,false);
-h+='<br/>已缓存: '+((k.cached||[]).map(c=>kvBtn(c.version,c.version+(c.current?' ●':''),false,c.current)).join(' ')||'无')+'<br/>';
-h+='<span class=url>上游查询: '+esc(L.checked_at||'未成功')+(L.error?(' · '+esc(L.error.slice(0,100))):'')+'</span></small>';
-el.innerHTML=h;
-}catch(e){el.innerHTML='<small style=color:#f87171>'+esc(e.message)+'</small>';}}
-document.getElementById('kernel').addEventListener('click',e=>{const b=e.target.closest('[data-kv]');if(b&&!b.disabled)switchCached(b.getAttribute('data-kv'));});
-async function switchCached(v){if(!confirm('切换内核到 '+v+'？sing-box 会重启（秒级中断）。'))return;
-btnKernelUpdate.disabled=true;btnKernelUpdate.textContent='切换中…';
+window._kernel=k;
+const L=k.latest||{},cur=k.current||{},managed=k.source==='compose';
+const cv=cur.version||'?';
+const set=(id,v)=>{document.getElementById(id).textContent=v;};
+set('kCurrent',cv);
+set('kCurrentBin',cur.bin||'-');
+set('kBase',managed?('compose · '+k.env_want):'面板管理');
+set('kBaseSub','内置 '+(k.baked||'-')+' · 钉住 '+(k.pinned||'无'));
+const hint=document.getElementById('kHint');
+set('kStable',L.stable||'-');set('kPreview',L.preview||'-');
+let hintHtml='',hintCls='khint';
+if(L.error){hintHtml='⚠ 上游查询失败：'+L.error;hintCls+=' warn';}
+else if(L.checked_at){hintHtml='上次检查：'+L.checked_at;}
+document.getElementById('kStableSub').textContent=L.stable&&L.stable===cv?'✓ 正在使用':'可升级';
+document.getElementById('kPreviewSub').textContent=L.preview&&L.preview===cv?'✓ 正在使用':(L.preview?'预览版，仅体验用':'暂未获取到');
+if(L.stable&&L.stable!==cv){hintHtml=managed?('可升级到稳定版 '+L.stable+'（高于基线，面板可切换）'):('发现新稳定版 '+L.stable);hintCls+=' up';}
+if(managed&&L.stable&&compareVer(L.stable,k.env_want)<=0){hintHtml='新版本 '+L.stable+' 不高于 compose 基线 '+k.env_want+'，面板不会切换';hintCls+=' warn';}
+hint.className=hintCls;hint.style.display=hintHtml?'':'none';hint.textContent=hintHtml;
+const tags=[];
+if(L.stable)tags.push({v:L.stable,t:'stable'});
+if(L.preview&&L.preview!==L.stable)tags.push({v:L.preview,t:'preview'});
+(k.cached||[]).forEach(c=>{if(!tags.some(t=>t.v===c.version))tags.push({v:c.version,t:'cached'})});
+const dl=document.getElementById('kVersions');dl.innerHTML=tags.map(t=>'<option value="'+esc(t.v)+'">').join('');
+document.getElementById('kTags').innerHTML=tags.length?tags.map(t=>{
+const isCur=t.v===cv;
+const lock=managed&&!isCur&&compareVer(t.v,k.env_want)<=0;
+const cls='ktag'+(isCur?' cur':'')+(lock?' locked':'');
+const sub=isCur?'使用中':(t.t==='stable'?'稳定版':t.t==='preview'?'预览版':'已缓存');
+return '<div class="'+cls+'" '+(isCur||lock?'':'data-kv="'+esc(t.v)+'" title="点击切换"')+'><span class="dot"></span><b>'+esc(t.v)+'</b><span style="color:#8fa0bd;font-size:11px">'+esc(sub)+'</span></div>';
+}).join(''):'<small>暂无可用版本，点右上角检查更新</small>';
+if(keep&&keep!=='-'&&keep.trim())document.getElementById('kLog').textContent=keep;
+}catch(e){
+document.getElementById('kCurrent').textContent='查询失败';
+document.getElementById('kHint').className='khint warn';
+document.getElementById('kHint').style.display='';
+document.getElementById('kHint').textContent=e.message;
+}}
+function compareVer(a,b){
+const norm=v=>{v=String(v||'').replace(/^[vV]/,'');const[i,pre='']=v.split('-');return{core:i.split('.').map(n=>parseInt(n,10)||0),pre};};
+const A=norm(a),B=norm(b);const n=Math.max(A.core.length,B.core.length);
+for(let i=0;i<n;i++){const x=A.core[i]||0,y=B.core[i]||0;if(x!==y)return x>y?1:-1;}
+if(!A.pre&&!B.pre)return 0;if(!A.pre)return 1;if(!B.pre)return -1;
+const rank=p=>{const m=/^(alpha|beta|pre|rc)/i.exec(p);const r=m?({alpha:1,beta:2,pre:2,rc:3}[m[1].toLowerCase()]):0;const t=parseInt(p.split('.').pop(),10);return[r,t||0];};
+const[ra,ta]=rank(A.pre),[rb,tb]=rank(B.pre);
+return ra!==rb?ra>rb?1:-1:ta!==tb?ta>tb?1:-1:0;
+}
+document.getElementById('kTags').addEventListener('click',e=>{const b=e.target.closest('[data-kv]');if(b)switchCached(b.getAttribute('data-kv'));});
+function klog(msg){const el=document.getElementById('kLog');const t=new Date().toLocaleTimeString();
+el.textContent=('['+t+'] '+msg+'\n'+(el.textContent==='-'?'':el.textContent)).slice(0,4000);}
+async function switchCached(v){
+const k=window._kernel||{};
+if(k.source==='compose'&&compareVer(v,k.env_want)<=0)return klog('拒绝：'+v+' 不高于 compose 基线 '+k.env_want);
+klog('开始切换到 '+v+'（下载→校验→重启，可能需要几十秒）…');
+const bar=document.getElementById('kBar');bar.className='kbar run';
+btnKernelUpdate.disabled=true;btnKernelRestore.disabled=true;
+const t0=Date.now();
 try{const r=await api('/api/kernel/update',{method:'POST',body:JSON.stringify({version:v})});
-alert('✅ 已切换到 '+r.version+'（pid='+r.pid+'）');refresh();loadKernel(false);loadLogs();}catch(e){alert('❌ '+e.message);}finally{btnKernelUpdate.disabled=false;btnKernelUpdate.textContent='更新并切换';}}
-btnKernelCheck.onclick=()=>loadKernel(true);
-btnKernelUpdate.onclick=()=>{const v=fKernel.value.trim();if(!v)return alert('请填写版本号');fKernel.value='';switchCached(v);};
-btnKernelRestore.onclick=async()=>{if(!confirm('恢复内置版内核？'))return;
-try{const r=await api('/api/kernel/restore',{method:'POST'});alert('✅ 已恢复 '+r.version);refresh();loadKernel(false);}catch(e){alert('❌ '+e.message);}};
+klog('✅ 已切换到 '+(r.version||v)+'，单实例重启完成，耗时 '+((Date.now()-t0)/1000).toFixed(1)+'s');
+fKernel.value='';await loadKernel(false);refresh();loadLogs();
+}catch(e){klog('❌ 切换失败：'+e.message);await loadKernel(false);
+}finally{bar.className='kbar';bar.style.width='0';btnKernelUpdate.disabled=false;btnKernelRestore.disabled=false;}}
+btnKernelCheck.onclick=async()=>{btnKernelCheck.disabled=true;btnKernelCheck.textContent='检查中…';
+try{await loadKernel(true);klog('已检查更新');}finally{btnKernelCheck.disabled=false;btnKernelCheck.textContent='⟳ 检查更新';}};
+btnKernelUpdate.onclick=()=>{const v=fKernel.value.trim();if(!v)return alert('请填写版本号');switchCached(v);};
+btnKernelRestore.onclick=async()=>{const k=window._kernel||{};if(!k.baked)return alert('未找到内置版本');
+if(k.source==='compose'&&compareVer(k.baked,k.env_want)<=0)return klog('拒绝：内置版 '+k.baked+' 不高于 compose 基线 '+k.env_want);
+if(!confirm('恢复内置版 '+k.baked+'？'))return;
+klog('正在恢复内置版 '+k.baked+'…');const bar=document.getElementById('kBar');bar.className='kbar run';
+try{const r=await api('/api/kernel/restore',{method:'POST'});klog('✅ 已恢复 '+r.version);await loadKernel(false);refresh();
+}catch(e){klog('❌ 恢复失败：'+e.message);}finally{bar.className='kbar';bar.style.width='0';}};
 async function loadLogs(){try{const j=await api('/api/logs?n=200');logs.textContent=j.logs.join('\\n')||'(空)';}catch(e){logs.textContent=e.message;}}
 btnLogs.onclick=loadLogs;refresh();loadLogs();setInterval(refresh,15000);
 </script></body></html>"""
