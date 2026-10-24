@@ -209,7 +209,42 @@ def load_last_update():
 
 # ---------------- 订阅拉取与解析 ----------------
 
+def socks_addr():
+    """SOCKS5 代理地址（去掉 scheme）。支持 socks5:// / socks5h:// / host:port。"""
+    p = (env("SOCKS5_PROXY", "") or "").strip()
+    if not p:
+        return ""
+    for scheme in ("socks5h://", "socks5://"):
+        if p.lower().startswith(scheme):
+            return p[len(scheme):]
+    return p
+
+
+def curl_get(url, timeout=15, use_proxy=True, extra=None):
+    """用 curl 抓取（urllib 不支持 SOCKS，故统一走 curl）。返回 bytes。"""
+    args = ["curl", "-fsSL", "--max-time", str(int(timeout)), "--retry", "2",
+            "--connect-timeout", str(min(10, int(timeout))),
+            "-A", "sing-box-sub-manager/1.0"]
+    addr = socks_addr() if use_proxy else ""
+    if addr:
+        # socks5h：由代理解析域名，避免容器内 DNS 污染
+        args += ["--socks5-hostname", addr]
+    args += list(extra or [])
+    args.append(url)
+    try:
+        r = subprocess.run(args, capture_output=True, timeout=timeout + 15)
+    except FileNotFoundError as e:
+        raise RuntimeError("系统缺少 curl，无法通过代理抓取") from e
+    if r.returncode != 0:
+        err = (r.stderr or b"").decode("utf-8", "ignore").strip()[:300]
+        raise RuntimeError(f"curl 失败(exit {r.returncode})：{err or '无输出'}")
+    return r.stdout
+
+
 def fetch_url(url, timeout=30):
+    if socks_addr() and env("SUBS_USE_PROXY", "").lower() in ("1", "true", "yes"):
+        data = curl_get(url, timeout=timeout, use_proxy=True)
+        return data, url
     req = urllib.request.Request(
         url,
         headers={
@@ -756,8 +791,9 @@ def pick_versions(data):
 
 def fetch_releases(force=False):
     """拉 GitHub releases 取最新稳定/预览版。结果缓存 RELEASES_TTL 秒，防限流。
-    可设 GITHUB_TOKEN 提额度；GITHUB_PROXY 会让 API 请求也走代理（国内直连常超时）。
-    失败时尽量返回旧缓存。"""
+
+    优先 SOCKS5_PROXY（直连 GitHub，不需要镜像站）；未设时才用 GITHUB_PROXY 镜像。
+    可设 GITHUB_TOKEN 提额度。失败时尽量返回旧缓存。"""
     now = time.time()
     with _kernel_lock:
         hit = (_kernel_releases["at"] and now - _kernel_releases["at"] < RELEASES_TTL
@@ -766,24 +802,22 @@ def fetch_releases(force=False):
             return dict(_kernel_releases)
     try:
         api_url = "https://api.github.com/repos/SagerNet/sing-box/releases?per_page=30"
+        use_socks = bool(socks_addr())
         proxy = env("GITHUB_PROXY", "").rstrip("/")
-        if proxy:
+        if proxy and not use_socks:
             api_url = f"{proxy}/{api_url}"
-        req = urllib.request.Request(
-            api_url,
-            headers={"User-Agent": "sing-box-sub-manager/1.0",
-                     "Accept": "application/vnd.github+json"})
-        token = env("GITHUB_TOKEN", "")
-        if token:
-            req.add_header("Authorization", f"Bearer {token}")
         try:
             timeout = float(env("GITHUB_API_TIMEOUT", "10"))
         except ValueError:
             timeout = 10.0
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
-            data = json.loads(resp.read().decode("utf-8"))
+        headers = ["-H", "Accept: application/vnd.github+json"]
+        token = env("GITHUB_TOKEN", "")
+        if token:
+            headers += ["-H", f"Authorization: Bearer {token}"]
+        raw = curl_get(api_url, timeout=timeout, use_proxy=use_socks, extra=headers)
+        data = json.loads(raw.decode("utf-8"))
         if not isinstance(data, list):
-            raise RuntimeError("上游返回非预期内容（可能被代理劫持）")
+            raise RuntimeError("上游返回非预期内容（可能被代理/镜像劫持）")
         stable, preview = pick_versions(data)
         if not stable and not preview:
             raise RuntimeError("上游未返回任何版本")
@@ -792,8 +826,8 @@ def fetch_releases(force=False):
             return dict(_kernel_releases)
     except Exception as e:  # noqa: BLE001
         msg = str(e)[:300]
-        if not env("GITHUB_PROXY", ""):
-            msg += "（可设置 GITHUB_PROXY 走代理）"
+        if not socks_addr() and not env("GITHUB_PROXY", ""):
+            msg += "（可设置 SOCKS5_PROXY 或 GITHUB_PROXY）"
         with _kernel_lock:
             if _kernel_releases["at"]:
                 out = dict(_kernel_releases)

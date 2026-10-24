@@ -24,17 +24,35 @@ DEST_DIR="${2:-/opt/sing-box/versions}"
 GH_PROXY="${GITHUB_PROXY:-}"
 case "$GH_PROXY" in "" ) ;; */) GH_PROXY="${GH_PROXY%/}";; esac
 
+# SOCKS5 代理优先于镜像站（镜像不稳时用）：
+#   SOCKS5_PROXY=socks5://user:pass@127.0.0.1:1080 或 socks5h://host:1080
+SOCKS_ADDR=""
+case "${SOCKS5_PROXY:-}" in
+  "") ;;
+  socks5h://*) SOCKS_ADDR="${SOCKS5_PROXY#socks5h://}";;
+  socks5://*) SOCKS_ADDR="${SOCKS5_PROXY#socks5://}";;
+  *) SOCKS_ADDR="$SOCKS5_PROXY";;
+esac
+CURL_ARGS=""
+if [ -n "$SOCKS_ADDR" ]; then
+  # --socks5-hostname：域名交给代理解析，避免容器 DNS 污染
+  CURL_ARGS="--socks5-hostname $SOCKS_ADDR"
+  GH_PROXY=""
+fi
+
 log() { echo "[install-kernel] $*" >&2; }
+
+do_curl() { curl -fsSL $CURL_ARGS "$@"; }
 
 resolve_latest() {
   if [ -n "$GH_PROXY" ]; then
-    # 走代理：releases/latest 会 302 到 releases/tag/<tag>，取最终地址尾段
-    EFF="$(curl -fsSL --max-time 20 -o /dev/null -w '%{url_effective}' "$GH_PROXY/https://github.com/SagerNet/sing-box/releases/latest")"
+    # 走镜像：releases/latest 会 302 到 releases/tag/<tag>，取最终地址尾段
+    EFF="$(do_curl --max-time 20 -o /dev/null -w '%{url_effective}' "$GH_PROXY/https://github.com/SagerNet/sing-box/releases/latest")"
     TAG="${EFF##*/}"
     case "$TAG" in v*|*.*) echo "$TAG"; return 0;; esac
     return 1
   fi
-  curl -fsSL --max-time 20 https://api.github.com/repos/SagerNet/sing-box/releases/latest | grep -m1 '"tag_name"' | cut -d'"' -f4
+  do_curl --max-time 20 https://api.github.com/repos/SagerNet/sing-box/releases/latest | grep -m1 '"tag_name"' | cut -d'"' -f4
 }
 
 if [ "$VERSION" = "latest" ] || [ "$VERSION" = "stable" ]; then
@@ -84,10 +102,13 @@ if [ -n "$GH_PROXY" ]; then
   URL="$GH_PROXY/$URL"
   log "using GitHub proxy: $GH_PROXY"
 fi
+if [ -n "$SOCKS_ADDR" ]; then
+  log "using SOCKS5 proxy: $SOCKS_ADDR"
+fi
 log "downloading $URL"
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT INT TERM
-curl -fsSL --retry 3 --max-time 300 -o "$TMP/pkg.tar.gz" "$URL"
+do_curl --retry 3 --max-time 300 -o "$TMP/pkg.tar.gz" "$URL"
 tar -xzf "$TMP/pkg.tar.gz" -C "$TMP"
 FOUND="$(find "$TMP" -name sing-box -type f | head -n 1)"
 [ -n "${FOUND:-}" ] || { log "ERROR: sing-box binary not found in $ASSET"; exit 1; }

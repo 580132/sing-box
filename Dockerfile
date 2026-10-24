@@ -23,6 +23,8 @@ RUN chmod +x /app/docker/install-kernel.sh /app/docker/entrypoint.sh /usr/local/
 ENV BAKED_SINGBOX_VERSION=${BAKED_SINGBOX_VERSION} \
     SINGBOX_VERSION="" \
     GITHUB_PROXY="" \
+    SOCKS5_PROXY="" \
+    SUBS_USE_PROXY="" \
     GITHUB_TOKEN="" \
     ALLOW_KERNEL_DOWNGRADE="" \
     TUN_EXCLUDE="" \

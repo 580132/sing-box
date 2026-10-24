@@ -53,13 +53,17 @@ environment:
 
 构建时换内置版本（一般不需要）：`docker compose build --build-arg BAKED_SINGBOX_VERSION=v1.14.3`。
 
-国内服务器直连 GitHub Release 慢/超时，加 `GITHUB_PROXY`（代理前缀拼到下载地址前）：
+国内服务器直连 GitHub Release 慢/超时，优先用 SOCKS5（镜像站不稳时更可靠）：
 
 ```yaml
 environment:
   SINGBOX_VERSION: "v1.15.0-alpha.12"
-  GITHUB_PROXY: "https://ghproxy.com/"   # 换成你可用的代理
+  SOCKS5_PROXY: "socks5h://192.168.1.2:1080"   # 或 socks5://user:pass@host:1080
+  # SUBS_USE_PROXY: "true"                     # 订阅也走代理（一般不需要）
 ```
+
+> `SOCKS5_PROXY` 一经设置即优先于 `GITHUB_PROXY` 镜像，内核下载、版本查询都走代理；
+> 用 `socks5h://` 时域名由代理解析，可绕开容器内 DNS 问题。
 
 > 另外 curl（内核下载）与面板（订阅拉取）都自动识别小写的 `http_proxy`/`https_proxy`/
 > `no_proxy` 环境变量，有自建代理也可直接配那几个。
@@ -86,7 +90,9 @@ config/subscriptions.example.json
 | `ALLOW_KERNEL_DOWNGRADE` | 空（不降级） | 置 `1` 才允许按 compose 低版本降级；默认本地有更新版时跳过下载 |
 | `GITHUB_TOKEN` | 空 | GitHub API token，面板查最新版限流时提额度 |
 | `GITHUB_API_TIMEOUT` | `10` | 面板查 GitHub API 的超时秒数 |
-| `GITHUB_PROXY` | 空（直连） | GitHub 代理前缀，如 `https://ghproxy.com/`，拼到 Release 下载地址前（含 `latest` 解析） |
+| `GITHUB_PROXY` | 空（直连） | 镜像前缀（如 `https://ghproxy.com/`）；设了 `SOCKS5_PROXY` 则忽略它 |
+| `SOCKS5_PROXY` | 空 | SOCKS5 代理，如 `socks5://user:pass@host:1080` 或 `socks5h://host:1080`；内核下载与版本查询都走它 |
+| `SUBS_USE_PROXY` | 空 | 置 `true` 时订阅拉取也走 `SOCKS5_PROXY` |
 | `TUN_EXCLUDE` | 空 | 逗号分隔的 CIDR，自动并入 tun 入站 `route_exclude_address`（防 `auto_route` 吞内网 DNS） |
 | `KERNEL_DIR` | `/opt/sing-box/versions` | 运行时下载的内核存放目录（建议挂 volume 持久化） |
 | `CONFIG_PATH` | `/etc/sing-box/config.json` | sing-box 实际运行配置 |

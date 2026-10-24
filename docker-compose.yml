@@ -30,8 +30,13 @@ services:
       # 彻底由面板接管：注释掉 SINGBOX_VERSION。
       # SINGBOX_VERSION: "v1.14.3"
       # ALLOW_KERNEL_DOWNGRADE: "1"   # 强制按低版本降级（默认不降）
-      # GitHub 代理：国内直连 Release 吃力时填，如 https://ghproxy.com/
-      # （构建时预装不受影响，只作用于运行时按需下载）
+      # GitHub 代理（镜像站不稳时优先用 SOCKS5）：
+      # SOCKS5_PROXY: "socks5://user:pass@192.168.1.2:1080"
+      # 或 socks5h://host:1080（域名由代理解析）；设了它就忽略 GITHUB_PROXY 镜像
+      # SOCKS5_PROXY: "socks5h://127.0.0.1:1080"
+      # 订阅拉取也走该代理（默认不走，订阅通常直连可达）：
+      # SUBS_USE_PROXY: "true"
+      # 备用镜像（没 SOCKS5 时才用）：
       # GITHUB_PROXY: "https://ghproxy.com/"
       # TUN 抢路由导致内网 DNS 被吞时，把网段摘出去（多个逗号分隔）：
       TUN_EXCLUDE: "192.168.1.0/24"
