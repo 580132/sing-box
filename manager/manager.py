@@ -1096,12 +1096,8 @@ label{font-size:13px;color:#8fa0bd}
 .kbar.run{display:block;animation:kpulse 1.2s ease-in-out infinite}
 @keyframes kpulse{0%{width:8%}50%{width:85%}100%{width:96%}}
 .ktags{display:flex;flex-wrap:wrap;gap:8px;margin-top:8px}
-.ktag{display:flex;align-items:center;gap:6px;background:#0f172a;border:1px solid #2a3650;border-radius:8px;padding:6px 10px;font-size:13px;cursor:pointer}
-.ktag:hover{border-color:#3b82f6}
-.ktag.cur{border-color:#10b981;cursor:default}
-.ktag.locked{opacity:.45;cursor:not-allowed}
-.ktag .dot{width:6px;height:6px;border-radius:50%;background:#64748b}
-.ktag.cur .dot{background:#10b981}
+.vtag{display:inline-block;margin-left:6px;padding:1px 7px;border-radius:10px;background:#0b1120;font-size:12px;color:#8fa0bd}
+button:disabled .vtag{color:#64748b}
 </style></head><body><div class="wrap">
 <div class="card"><div class="row" style="justify-content:space-between">
 <div><h1>📡 sing-box 订阅管理</h1><small>远程拉取订阅 → 校验 → SIGHUP 热重载，老连接不断</small></div>
@@ -1129,13 +1125,11 @@ label{font-size:13px;color:#8fa0bd}
 </div>
 <div id="kHint" class="khint" style="display:none"></div>
 <div class="kbar-wrap"><div class="kbar" id="kBar"></div></div>
-<div class="row" style="margin-top:12px;align-items:flex-end">
-<div style="flex:1;min-width:200px"><label>指定版本（可填 latest）</label>
-<input id="fKernel" list="kVersions" placeholder="v1.15.0-alpha.12 / v1.14.3 / latest"/>
-<datalist id="kVersions"></datalist></div>
-<div class="row"><button id="btnKernelUpdate">更新并切换</button><button class="ghost" id="btnKernelRestore">恢复内置版</button></div>
+<div class="row" style="margin-top:12px">
+<button id="btnUseStable">切换到稳定版<span class="vtag" id="kStableTag"></span></button>
+<button id="btnUsePreview">切换到预览版<span class="vtag" id="kPreviewTag"></span></button>
+<button class="ghost" id="btnKernelRestore">恢复内置版</button>
 </div>
-<div style="margin-top:14px"><div class="klabel">可选版本（点击即切换）</div><div id="kTags" class="ktags">加载中…</div></div>
 <div style="margin-top:12px"><div class="klabel">最近操作</div><pre id="kLog" style="max-height:140px;margin:6px 0 0">-</pre></div>
 </div>
 <div class="card"><h1 style="font-size:16px">🧾 日志</h1><div class="row" style="margin:8px 0"><button class="ghost" id="btnLogs">刷新日志</button></div><pre id="logs">-</pre></div>
@@ -1187,28 +1181,24 @@ set('kCurrent',cv);
 set('kCurrentBin',cur.bin||'-');
 set('kBase',managed?('compose · '+k.env_want):'面板管理');
 set('kBaseSub','内置 '+(k.baked||'-')+' · 钉住 '+(k.pinned||'无'));
-const hint=document.getElementById('kHint');
 set('kStable',L.stable||'-');set('kPreview',L.preview||'-');
+const onStable=sameVer(L.stable,cv),onPreview=sameVer(L.preview,cv);
+document.getElementById('kStableSub').textContent=onStable?'✓ 正在使用':(L.stable?'可切换':'暂未获取到');
+document.getElementById('kPreviewSub').textContent=onPreview?'✓ 正在使用':(L.preview?'可切换':'暂未获取到');
+const hint=document.getElementById('kHint');
 let hintHtml='',hintCls='khint';
 if(L.error){hintHtml='⚠ 上游查询失败：'+L.error;hintCls+=' warn';}
+else if(onStable||onPreview){hintHtml='当前已是'+(onStable?'最新稳定版':'最新预览版')+'，无需切换'+(L.checked_at?('（检查于 '+L.checked_at+'）'):'');hintCls+=' up';}
+else if(L.stable||L.preview){hintHtml='有新版本可切换'+(L.checked_at?('（检查于 '+L.checked_at+'）'):'');hintCls+=' up';}
 else if(L.checked_at){hintHtml='上次检查：'+L.checked_at;}
-document.getElementById('kStableSub').textContent=sameVer(L.stable,cv)?'✓ 正在使用':(L.stable?'可升级':'暂未获取到');
-document.getElementById('kPreviewSub').textContent=sameVer(L.preview,cv)?'✓ 正在使用':(L.preview?'预览版，仅体验用':'暂未获取到');
-if(L.stable&&!sameVer(L.stable,cv)){hintHtml=managed?('可升级到稳定版 '+L.stable+'（高于基线，面板可切换）'):('发现新稳定版 '+L.stable);hintCls+=' up';}
-if(managed&&L.stable&&compareVer(L.stable,k.env_want)<=0){hintHtml='新版本 '+L.stable+' 不高于 compose 基线 '+k.env_want+'，面板不会切换';hintCls+=' warn';}
+if(managed&&L.stable&&compareVer(L.stable,k.env_want)<=0&&!onStable){hintHtml='新稳定版 '+L.stable+' 不高于 compose 基线 '+k.env_want+'，面板不会切换';hintCls='khint warn';}
 hint.className=hintCls;hint.style.display=hintHtml?'':'none';hint.textContent=hintHtml;
-const tags=[];
-if(L.stable)tags.push({v:L.stable,t:'stable'});
-if(L.preview&&L.preview!==L.stable)tags.push({v:L.preview,t:'preview'});
-(k.cached||[]).forEach(c=>{if(!tags.some(t=>t.v===c.version))tags.push({v:c.version,t:'cached'})});
-const dl=document.getElementById('kVersions');dl.innerHTML=tags.map(t=>'<option value="'+esc(t.v)+'">').join('');
-document.getElementById('kTags').innerHTML=tags.length?tags.map(t=>{
-const isCur=sameVer(t.v,cv);
-const lock=managed&&!isCur&&compareVer(t.v,k.env_want)<=0;
-const cls='ktag'+(isCur?' cur':'')+(lock?' locked':'');
-const sub=isCur?'使用中':(t.t==='stable'?'稳定版':t.t==='preview'?'预览版':'已缓存');
-return '<div class="'+cls+'" '+(isCur||lock?'':'data-kv="'+esc(t.v)+'" title="点击切换"')+'><span class="dot"></span><b>'+esc(t.v)+'</b><span style="color:#8fa0bd;font-size:11px">'+esc(sub)+'</span></div>';
-}).join(''):'<small>暂无可用版本，点右上角检查更新</small>';
+const lockOf=v=>({ok:!!v&&!sameVer(v,cv)&&!(managed&&compareVer(v,k.env_want)<=0),cur:sameVer(v,cv)});
+const st=lockOf(L.stable),pv=lockOf(L.preview);
+document.getElementById('kStableTag').textContent=L.stable?L.stable:(L.error?'查询失败':'未获取');
+document.getElementById('kPreviewTag').textContent=L.preview?L.preview:(L.error?'查询失败':'未获取');
+document.getElementById('btnUseStable').disabled=!st.ok;
+document.getElementById('btnUsePreview').disabled=!pv.ok;
 if(keep&&keep!=='-'&&keep.trim())document.getElementById('kLog').textContent=keep;
 }catch(e){
 document.getElementById('kCurrent').textContent='查询失败';
@@ -1226,25 +1216,26 @@ const[ra,ta]=rank(A.pre),[rb,tb]=rank(B.pre);
 return ra!==rb?ra>rb?1:-1:ta!==tb?ta>tb?1:-1:0;
 }
 function sameVer(a,b){return !!a&&!!b&&compareVer(a,b)===0;}
-document.getElementById('kTags').addEventListener('click',e=>{const b=e.target.closest('[data-kv]');if(b)switchCached(b.getAttribute('data-kv'));});
 function klog(msg){const el=document.getElementById('kLog');const t=new Date().toLocaleTimeString();
-el.textContent=('['+t+'] '+msg+'\n'+(el.textContent==='-'?'':el.textContent)).slice(0,4000);}
+el.textContent=('['+t+'] '+msg+'\\n'+(el.textContent==='-'?'':el.textContent)).slice(0,4000);}
 async function switchCached(v){
 const k=window._kernel||{};
+if(!v)return klog('未获取到该通道版本，请先检查更新');
 if(k.source==='compose'&&compareVer(v,k.env_want)<=0)return klog('拒绝：'+v+' 不高于 compose 基线 '+k.env_want);
 klog('开始切换到 '+v+'（下载→校验→重启，可能需要几十秒）…');
 const bar=document.getElementById('kBar');bar.className='kbar run';
-btnKernelUpdate.disabled=true;btnKernelRestore.disabled=true;
+btnUseStable.disabled=true;btnUsePreview.disabled=true;btnKernelRestore.disabled=true;
 const t0=Date.now();
 try{const r=await api('/api/kernel/update',{method:'POST',body:JSON.stringify({version:v})});
-klog('✅ 已切换到 '+(r.version||v)+'，单实例重启完成，耗时 '+((Date.now()-t0)/1000).toFixed(1)+'s');
-fKernel.value='';await loadKernel(false);refresh();loadLogs();
+klog('✅ 已切换到 '+(r.version||v)+'，耗时 '+((Date.now()-t0)/1000).toFixed(1)+'s');
+await loadKernel(false);refresh();loadLogs();
 }catch(e){klog('❌ 切换失败：'+e.message);await loadKernel(false);
-}finally{bar.className='kbar';bar.style.width='0';btnKernelUpdate.disabled=false;btnKernelRestore.disabled=false;}}
+}finally{bar.className='kbar';bar.style.width='0';btnKernelRestore.disabled=false;}}
+btnUseStable.onclick=()=>switchCached(((window._kernel||{}).latest||{}).stable);
+btnUsePreview.onclick=()=>switchCached(((window._kernel||{}).latest||{}).preview);
 btnKernelCheck.onclick=async()=>{btnKernelCheck.disabled=true;btnKernelCheck.textContent='检查中…';
 try{await loadKernel(true);klog('已检查更新');}finally{btnKernelCheck.disabled=false;btnKernelCheck.textContent='⟳ 检查更新';}};
-btnKernelUpdate.onclick=()=>{const v=fKernel.value.trim();if(!v)return alert('请填写版本号');switchCached(v);};
-btnKernelRestore.onclick=async()=>{const k=window._kernel||{};if(!k.baked)return alert('未找到内置版本');
+btnKernelRestore.onclick=async()=>{const k=window._kernel||{};if(!k.baked)return klog('未找到内置版本');
 if(k.source==='compose'&&compareVer(k.baked,k.env_want)<=0)return klog('拒绝：内置版 '+k.baked+' 不高于 compose 基线 '+k.env_want);
 if(!confirm('恢复内置版 '+k.baked+'？'))return;
 klog('正在恢复内置版 '+k.baked+'…');const bar=document.getElementById('kBar');bar.className='kbar run';

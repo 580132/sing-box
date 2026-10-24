@@ -24,7 +24,27 @@ jobs:
 
       - name: Web UI syntax check
         run: |
-          python3 -c "import re;src=open('manager/manager.py',encoding='utf-8').read();open('/tmp/ui.js','w',encoding='utf-8').write(re.search(r'<script>(.*)</script>',src,re.S).group(1))"
+          python3 - <<'PY'
+          import re
+          src = open('manager/manager.py', encoding='utf-8').read()
+          i = src.index('UI_HTML = """') + len('UI_HTML = """')
+          html = src[i:src.index('"""', i)]
+          js = html[html.index('<script>') + 8: html.index('</script>')]
+          open('/tmp/ui.js', 'w', encoding='utf-8').write(js)
+          # Python 非 raw 字符串里的 \n 会变成真换行，导致 JS 字符串跨行报错
+          for ln, line in enumerate(js.splitlines(), 1):
+              q = even = 0
+              k = 0
+              while k < len(line):
+                  if line[k] == '\\':
+                      k += 2
+                      continue
+                  if line[k] == "'":
+                      q += 1
+                  k += 1
+              if q % 2 == 1 and not line.strip().startswith('//'):
+                  raise SystemExit(f'line {ln}: unclosed JS string (literal newline?): {line.strip()[:120]}')
+          PY
           node --check /tmp/ui.js && echo UI_JS_OK
 
       - name: Set up QEMU
