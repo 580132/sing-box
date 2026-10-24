@@ -10,6 +10,8 @@
 - 多订阅混合：以第一份完整配置为底座，其余订阅的节点合并进来
 - 一键热重载：拉取 → `sing-box check` 校验 → 原子写 `config.json` → `kill -HUP` 热重载
   - 校验失败则保留旧配置并返回错误，不中断现有连接
+  - 每次校验通过的配置都会另存为 `config-last-good.json`；配置损坏时自动回滚到该版本
+- 容器重启与内核切换前都会先远程刷新订阅并校验配置，失败自动回滚
 - Web 面板（`:8080`）+ REST API，可选 `MANAGER_TOKEN` 鉴权
 - 定时自动更新（`AUTO_UPDATE_INTERVAL`，如 `6h` / `30m`，`0` 关闭）
 
@@ -83,6 +85,7 @@ config/subscriptions.example.json
 | `SINGBOX_VERSION` | 空（=面板接管） | 写死即定下限：面板只能升级到更新版本；注释掉则完全由面板切换+钉住 |
 | `ALLOW_KERNEL_DOWNGRADE` | 空（不降级） | 置 `1` 才允许按 compose 低版本降级；默认本地有更新版时跳过下载 |
 | `GITHUB_TOKEN` | 空 | GitHub API token，面板查最新版限流时提额度 |
+| `GITHUB_API_TIMEOUT` | `10` | 面板查 GitHub API 的超时秒数 |
 | `GITHUB_PROXY` | 空（直连） | GitHub 代理前缀，如 `https://ghproxy.com/`，拼到 Release 下载地址前（含 `latest` 解析） |
 | `TUN_EXCLUDE` | 空 | 逗号分隔的 CIDR，自动并入 tun 入站 `route_exclude_address`（防 `auto_route` 吞内网 DNS） |
 | `KERNEL_DIR` | `/opt/sing-box/versions` | 运行时下载的内核存放目录（建议挂 volume 持久化） |

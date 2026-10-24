@@ -80,13 +80,19 @@ if [ ! -f "$TEMPLATE_PATH" ]; then
   echo "[entrypoint] no template at $TEMPLATE_PATH (optional, full-config subscriptions don't need it)"
 fi
 
-# 启动时先拉取一次订阅生成 config.json（失败则沿用旧 config）
+# 启动时先远程拉取订阅生成 config.json（应用前校验，出错自动回滚 last-good）
+LAST_GOOD="$CACHE_DIR/config-last-good.json"
 if [ "$UPDATE_ON_START" = "true" ]; then
   echo "[entrypoint] fetching subscriptions before start..."
   if python3 /app/manager/manager.py --update-once; then
     echo "[entrypoint] initial fetch OK"
   else
-    echo "[entrypoint] WARN: initial fetch failed, fallback to existing config" >&2
+    echo "[entrypoint] WARN: initial fetch/validate failed, will fall back" >&2
+    # manager 内部已在需要时回滚；这里再兜底一次
+    if [ ! -f "$CONFIG_PATH" ] && [ -f "$LAST_GOOD" ]; then
+      echo "[entrypoint] restoring last known good config"
+      cp "$LAST_GOOD" "$CONFIG_PATH"
+    fi
     if [ ! -f "$CONFIG_PATH" ]; then
       if [ -f "$TEMPLATE_PATH" ]; then
         echo "[entrypoint] no existing config, copying template as-is"
@@ -99,7 +105,10 @@ if [ "$UPDATE_ON_START" = "true" ]; then
   fi
 else
   if [ ! -f "$CONFIG_PATH" ]; then
-    if [ -f "$TEMPLATE_PATH" ]; then
+    if [ -f "$LAST_GOOD" ]; then
+      echo "[entrypoint] restoring last known good config"
+      cp "$LAST_GOOD" "$CONFIG_PATH"
+    elif [ -f "$TEMPLATE_PATH" ]; then
       cp "$TEMPLATE_PATH" "$CONFIG_PATH"
     else
       echo "[entrypoint] ERROR: missing $CONFIG_PATH and UPDATE_ON_START=false with no template" >&2
@@ -109,7 +118,16 @@ else
 fi
 
 echo "[entrypoint] checking config: $SINGBOX_BIN check -c $CONFIG_PATH"
-"$SINGBOX_BIN" check -c "$CONFIG_PATH"
+if ! "$SINGBOX_BIN" check -c "$CONFIG_PATH"; then
+  if [ -f "$LAST_GOOD" ]; then
+    echo "[entrypoint] WARN: config invalid, rolling back to last known good" >&2
+    cp "$LAST_GOOD" "$CONFIG_PATH"
+    "$SINGBOX_BIN" check -c "$CONFIG_PATH"
+  else
+    echo "[entrypoint] ERROR: config invalid and no last-good backup" >&2
+    exit 1
+  fi
+fi
 
 cleanup() {
   echo "[entrypoint] shutting down..."

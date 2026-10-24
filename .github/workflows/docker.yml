@@ -44,6 +44,16 @@ jobs:
                   k += 1
               if q % 2 == 1 and not line.strip().startswith('//'):
                   raise SystemExit(f'line {ln}: unclosed JS string (literal newline?): {line.strip()[:120]}')
+          # 重复 id 会导致 getElementById 只命中第一个，后面的按钮点了没反应
+          import collections
+          ids = re.findall(r'id="([^"]+)"', html)
+          dup = [i for i, c in collections.Counter(ids).items() if c > 1]
+          if dup:
+              raise SystemExit(f'duplicate element id(s): {dup}')
+          # 每个按钮都要有事件绑定，否则是死按钮
+          for b in re.findall(r'<button[^>]*id="([^"]+)"', html):
+              if not re.search(rf'\b{b}\.onclick\s*=', js) and not re.search(rf"getElementById\('{b}'\)\.addEventListener", js):
+                  raise SystemExit(f'button without handler: {b}')
           PY
           node --check /tmp/ui.js && echo UI_JS_OK
 

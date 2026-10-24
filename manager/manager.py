@@ -59,6 +59,57 @@ PLACEHOLDER_TAG = "__SUBSCRIPTION__"
 def last_update_path():
     return os.path.join(env("CACHE_DIR", CACHE_DIR), "last_update.json")
 
+
+def last_good_path():
+    return os.path.join(env("CACHE_DIR", CACHE_DIR), "config-last-good.json")
+
+
+def save_last_good(text):
+    """保存最后一次通过 sing-box check 的配置文本，供出错时回滚。"""
+    try:
+        p = last_good_path()
+        os.makedirs(os.path.dirname(os.path.abspath(p)) or ".", exist_ok=True)
+        tmp = p + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            f.write(text)
+        safe_replace(tmp, p)
+        return True
+    except Exception as e:  # noqa: BLE001
+        log(f"WARN: 保存last-good失败：{e}")
+        return False
+
+
+def load_last_good():
+    try:
+        with open(last_good_path(), "r", encoding="utf-8") as f:
+            return f.read()
+    except OSError:
+        return None
+
+
+def restore_last_good(dst=None):
+    """把 last-good 配置写回 CONFIG_PATH（先 make 临时文件再原子替换）。"""
+    dst = dst or CONFIG_PATH
+    text = load_last_good()
+    if not text:
+        return False
+    try:
+        os.makedirs(os.path.dirname(os.path.abspath(dst)) or ".", exist_ok=True)
+        tmp = dst + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            f.write(text)
+        safe_replace(tmp, dst)
+        log(f"已回滚到上次可用配置：{dst}")
+        return True
+    except Exception as e:  # noqa: BLE001
+        log(f"WARN: 回滚last-good失败：{e}")
+        return False
+
+
+def config_is_valid(path=None):
+    code, out = singbox_check(path or CONFIG_PATH)
+    return code == 0, out
+
 _lock = threading.Lock()
 _kernel_lock = threading.RLock()
 _kernel_releases = {"at": 0, "stable": "", "preview": "", "error": ""}
@@ -424,9 +475,14 @@ def do_update_and_reload(fetch=True, send_hup_signal=True):
         save_subs(subs)
 
         if not all_obs and not ALLOW_EMPTY_OUTBOUNDS:
-            save_last_update({"at": started, "ok": False, "details": details,
+            # 全部订阅失败：保住可用配置，必要时回滚
+            restored = False
+            ok_now, _ = config_is_valid(CONFIG_PATH)
+            if not ok_now:
+                restored = restore_last_good()
+            save_last_update({"at": started, "ok": False, "details": details, "restored": restored,
                               "message": "全部订阅拉取失败，已拒绝重载以保护运行中的配置"})
-            return {"ok": False, "reloaded": False, "details": details,
+            return {"ok": False, "reloaded": False, "restored": restored, "details": details,
                     "message": "全部订阅拉取失败，已保留旧配置（置 ALLOW_EMPTY_OUTBOUNDS=true 可强制）"}
 
         if full_configs and all_obs:
@@ -463,11 +519,20 @@ def do_update_and_reload(fetch=True, send_hup_signal=True):
                 os.remove(tmp)
             except OSError:  # noqa: BLE001
                 pass
+            # 新配置不可用：若当前在跑的配置已损坏，回滚到最后一次通过的版本
+            restored = False
+            ok_now, _ = config_is_valid(CONFIG_PATH)
+            if not ok_now:
+                restored = restore_last_good()
             save_last_update({"at": started, "ok": False, "details": details,
+                              "restored": restored,
                               "message": "sing-box check 失败，未替换配置", "check_output": output[-4000:]})
-            return {"ok": False, "reloaded": False, "details": details,
-                    "message": "新配置校验失败，已保留旧配置", "check_output": output[-4000:]}
+            note = "已回滚到上次可用配置" if restored else "已保留旧配置"
+            return {"ok": False, "reloaded": False, "restored": restored, "details": details,
+                    "message": f"新配置校验失败，{note}", "check_output": output[-4000:]}
         safe_replace(tmp, CONFIG_PATH)
+        with open(CONFIG_PATH, "r", encoding="utf-8") as f:
+            save_last_good(f.read())
         log(f"配置已更新并通过校验：outbounds={len(tags)} mode={apply_mode}")
 
         if send_hup_signal:
@@ -691,7 +756,8 @@ def pick_versions(data):
 
 def fetch_releases(force=False):
     """拉 GitHub releases 取最新稳定/预览版。结果缓存 RELEASES_TTL 秒，防限流。
-    可设 GITHUB_TOKEN 提额度。失败时尽量返回旧缓存。"""
+    可设 GITHUB_TOKEN 提额度；GITHUB_PROXY 会让 API 请求也走代理（国内直连常超时）。
+    失败时尽量返回旧缓存。"""
     now = time.time()
     with _kernel_lock:
         hit = (_kernel_releases["at"] and now - _kernel_releases["at"] < RELEASES_TTL
@@ -699,26 +765,41 @@ def fetch_releases(force=False):
         if hit:
             return dict(_kernel_releases)
     try:
+        api_url = "https://api.github.com/repos/SagerNet/sing-box/releases?per_page=30"
+        proxy = env("GITHUB_PROXY", "").rstrip("/")
+        if proxy:
+            api_url = f"{proxy}/{api_url}"
         req = urllib.request.Request(
-            "https://api.github.com/repos/SagerNet/sing-box/releases?per_page=30",
+            api_url,
             headers={"User-Agent": "sing-box-sub-manager/1.0",
                      "Accept": "application/vnd.github+json"})
         token = env("GITHUB_TOKEN", "")
         if token:
             req.add_header("Authorization", f"Bearer {token}")
-        with urllib.request.urlopen(req, timeout=20) as resp:
+        try:
+            timeout = float(env("GITHUB_API_TIMEOUT", "10"))
+        except ValueError:
+            timeout = 10.0
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
             data = json.loads(resp.read().decode("utf-8"))
+        if not isinstance(data, list):
+            raise RuntimeError("上游返回非预期内容（可能被代理劫持）")
         stable, preview = pick_versions(data)
+        if not stable and not preview:
+            raise RuntimeError("上游未返回任何版本")
         with _kernel_lock:
             _kernel_releases.update(at=now, stable=stable, preview=preview, error="")
             return dict(_kernel_releases)
     except Exception as e:  # noqa: BLE001
+        msg = str(e)[:300]
+        if not env("GITHUB_PROXY", ""):
+            msg += "（可设置 GITHUB_PROXY 走代理）"
         with _kernel_lock:
             if _kernel_releases["at"]:
                 out = dict(_kernel_releases)
-                out["error"] = f"刷新失败，显示缓存：{e}"[:300]
+                out["error"] = f"刷新失败，显示缓存：{msg}"[:300]
                 return out
-            return {"at": 0, "stable": "", "preview": "", "error": str(e)[:300]}
+            return {"at": 0, "stable": "", "preview": "", "error": msg}
 
 
 def list_cached_kernels():
@@ -795,12 +876,28 @@ def wait_alive(proc, timeout=8):
     return proc.poll() is None
 
 
-def switch_kernel(version, pin=True):
-    """换内核：下载（复用缓存）→ 新二进制 check → 停旧 → 切软链 → 起新 → 验证。
+def switch_kernel(version, pin=True, refresh_subs=True):
+    """换内核：先远程刷新订阅（应用前校验，失败回滚）→ 下载内核（复用缓存）
+    → 新二进制 check 配置 → 停旧 → 切软链 → 起新 → 验证。
     新版起不来则回滚旧版并抛错。成功时默认钉住版本（容器重建仍用它）。"""
     if not version or not VERSION_RE.match(version):
         raise ValueError("版本号非法（例：v1.15.0-alpha.12 / v1.14.3 / latest）")
     with _kernel_lock:
+        # 1) 重启/切内核前先远程更新订阅，应用时做配置检查，出错自动回滚
+        refresh_info = ""
+        if refresh_subs:
+            try:
+                r = do_update_and_reload(fetch=True, send_hup_signal=False)
+                if r.get("ok"):
+                    refresh_info = f"订阅已刷新（{r.get('count')} 节点）"
+                    log(f"切换内核前刷新订阅成功：{refresh_info}")
+                else:
+                    refresh_info = f"订阅刷新未生效：{r.get('message')}"
+                    log(f"WARN: 切换内核前刷新订阅失败：{r.get('message')}")
+            except Exception as e:  # noqa: BLE001
+                refresh_info = f"订阅刷新异常：{e}"
+                log(f"WARN: 切换内核前刷新订阅异常：{e}")
+
         baked = read_baked_version()
 
         def _norm(v):
@@ -817,7 +914,11 @@ def switch_kernel(version, pin=True):
             norm = os.path.basename(os.path.dirname(new_bin.rstrip("/")))
         code, chk = singbox_check(CONFIG_PATH, new_bin)
         if code != 0:
-            raise RuntimeError(f"新内核校验配置失败，未切换：{chk[-1000:]}")
+            # 新内核跑不动现有配置：回滚到最后一次可用配置再试一次
+            if restore_last_good():
+                code, chk = singbox_check(CONFIG_PATH, new_bin)
+            if code != 0:
+                raise RuntimeError(f"新内核校验配置失败，未切换：{chk[-1000:]}")
         old_bin = resolve_current_bin()
         prev_link = os.path.realpath(BIN_LINK) if os.path.islink(BIN_LINK) else None
         stop_singbox()
@@ -844,7 +945,8 @@ def switch_kernel(version, pin=True):
             write_pinned_version(norm)
         log(f"内核已切换：{old_bin} -> {new_bin} pid={proc.pid}")
         return {"ok": True, "version": norm, "bin": new_bin, "pid": proc.pid,
-                "previous": old_bin, "install_log": inst_log[-1500:]}
+                "previous": old_bin, "install_log": inst_log[-1500:],
+                "subscription_refresh": refresh_info}
 
 
 def kernel_info(refresh=False):
@@ -1145,8 +1247,7 @@ label{font-size:13px;color:#8fa0bd}
 </div><small>Clash/V2Ray 明文订阅请先用 subconverter 转成 target=singbox。</small></div>
 <div class="card"><h1 style="font-size:16px">📋 订阅列表</h1><div id="list" style="margin-top:8px">加载中…</div></div>
 <div class="card"><div class="row" style="justify-content:space-between">
-<div><h1 style="font-size:16px">🔧 内核版本</h1><small>切换会重启 sing-box（秒级中断），订阅配置不受影响；成功后自动钉住，重建容器仍用该版本</small></div>
-<div class="row"><button class="ghost" id="btnKernelCheck">⟳ 检查更新</button></div>
+<div><h1 style="font-size:16px">🔧 内核版本</h1><small>切换会重启 sing-box（秒级中断），切换前会自动刷新订阅并校验配置；成功后自动钉住</small></div>
 </div>
 <div class="kgrid" style="margin-top:12px">
 <div class="kbox"><div class="klabel">当前运行</div><div class="kval" id="kCurrent">-</div><div class="ksub" id="kCurrentBin">-</div></div>
@@ -1283,6 +1384,7 @@ await kLoadInfo(false);refresh();loadLogs();
 finally{KC.busy=false;bar.className='kbar';bar.style.width='0';btnKernelCheck.disabled=false;btnKernelRestore.disabled=false;kRenderTarget();}}
 btnUseSelected.onclick=()=>kSwitch(KC.target);
 btnKernelCheck.onclick=async()=>{btnKernelCheck.disabled=true;btnKernelCheck.textContent='检查中…';
+klog('开始检查'+(KC.channel==='preview'?'预览版':'稳定版')+'通道最新版本…');
 try{await kLoadInfo(true);klog('已检查'+(KC.channel==='preview'?'预览版':'稳定版')+'通道：'+(KC.target||'未获取到'));}
 catch(e){KC.upErr=e.message;kRenderTarget();klog('❌ 检查失败：'+e.message);}
 finally{btnKernelCheck.disabled=false;btnKernelCheck.textContent='⟳ 检查更新';}};
