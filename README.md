@@ -37,8 +37,9 @@ xdg-open http://localhost:8080
 
 - compose 写了 `SINGBOX_VERSION` 即定下限：面板只能升级到**更新**版本，平级/降级拒绝；
 - 启动时跑 `max(compose, 面板钉住, 内置)`，本地已有更新版默认不降级下载；
-- 面板「🔧 内核版本」卡片点「检查更新」看最新稳定/预览版，一键切换
-  （下载→新二进制 check→重启 sing-box→失败自动回滚旧版），成功后自动钉住；
+- 面板「🔧 内核版本」：先选通道（稳定版 / 预览版），「检查更新」按所选通道取最新版，
+  再一键「更新到所选版本」（下载→新二进制 check→重启 sing-box→失败自动回滚旧版）；
+  当前运行版本进页面即显示，无需先检查；成功后自动钉住；
 - `ALLOW_KERNEL_DOWNGRADE=1` 可强制降级；注释掉 `SINGBOX_VERSION` 则完全由面板接管。
 
 ```yaml
@@ -110,6 +111,8 @@ POST /api/reload-only           不拉取，仅 SIGHUP 重载当前 config.json
 GET  /api/kernel[?refresh=1]       内核信息：当前/内置/钉住/控制权/已缓存/最新稳定/最新预览
 POST /api/kernel/update           {version} 下载并切换内核（失败回滚），成功自动钉住
 POST /api/kernel/restore          切回内置版并解除钉住
+
+`/api/status` 里的 `kernel` 字段是轻量概览（不访问网络），面板首屏据此直接显示当前版本。
 GET  /api/logs?n=200            manager 日志尾部（排障用）
 ```
 

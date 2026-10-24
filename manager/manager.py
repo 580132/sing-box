@@ -493,12 +493,29 @@ def get_status():
     return {
         "singbox": {"running": pid is not None, "pid": pid, "bin": SINGBOX_BIN,
                     "kernel_version": bin_version(resolve_current_bin())},
+        "kernel": kernel_summary(),
         "config": cfg_info,
         "subscriptions": {"total": len(subs), "enabled": sum(1 for s in subs if s.get("enabled", True))},
         "last_update": load_last_update(),
         "allow_empty": ALLOW_EMPTY_OUTBOUNDS,
         "time": utcnow_iso(),
     }
+
+
+def kernel_summary():
+    """轻量内核概览（只读本地文件/进程，不访问网络），供页面首屏直接渲染。"""
+    try:
+        cur_bin = resolve_current_bin()
+        return {
+            "version": bin_version(cur_bin),
+            "bin": cur_bin,
+            "baked": read_baked_version(),
+            "pinned": read_pinned_version(),
+            "source": kernel_source(),
+            "env_want": env("SINGBOX_VERSION", ""),
+        }
+    except Exception:  # noqa: BLE001
+        return {"version": "", "bin": "", "baked": "", "pinned": "", "source": "panel", "env_want": ""}
 
 
 # ---------------- 内核版本管理 ----------------
@@ -626,18 +643,31 @@ def resolve_current_bin():
     return shutil.which(SINGBOX_BIN) or SINGBOX_BIN
 
 
+_bin_ver_cache = {"key": None, "at": 0.0, "value": ""}
+BIN_VER_TTL = 60
+
+
 def bin_version(path):
+    """读取二进制版本，带 60s 缓存（状态轮询每 15s 一次，避免反复拉起进程）。"""
+    try:
+        st = os.stat(path)
+        key = (path, st.st_mtime_ns, st.st_size)
+    except OSError:
+        key = (path, 0, 0)
+    now = time.time()
+    if _bin_ver_cache["key"] == key and now - _bin_ver_cache["at"] < BIN_VER_TTL:
+        return _bin_ver_cache["value"]
     try:
         r = subprocess.run([path, "version"], capture_output=True, text=True, timeout=15)
         first = ((r.stdout or "").strip().splitlines() or [""])[:1][0]
         m = re.search(r"sing-box version (\S+)", first)
         v = m.group(1) if m else first[:80]
-        # 统一带 v 前缀，便于与 tag / 目录名直接比较
         if v and v[0].isdigit():
             v = "v" + v
-        return v
     except Exception:  # noqa: BLE001
-        return ""
+        v = ""
+    _bin_ver_cache.update(key=key, at=now, value=v)
+    return v
 
 
 def pick_versions(data):
@@ -1095,9 +1125,10 @@ label{font-size:13px;color:#8fa0bd}
 .kbar{height:100%;width:0;background:linear-gradient(90deg,#3b82f6,#22d3ee);transition:width .4s}
 .kbar.run{display:block;animation:kpulse 1.2s ease-in-out infinite}
 @keyframes kpulse{0%{width:8%}50%{width:85%}100%{width:96%}}
-.ktags{display:flex;flex-wrap:wrap;gap:8px;margin-top:8px}
-.vtag{display:inline-block;margin-left:6px;padding:1px 7px;border-radius:10px;background:#0b1120;font-size:12px;color:#8fa0bd}
-button:disabled .vtag{color:#64748b}
+.kseg{display:inline-flex;background:#0f172a;border:1px solid #2a3650;border-radius:9px;padding:3px;gap:3px}
+.kseg .seg{background:transparent;color:#8fa0bd;padding:7px 16px;border-radius:7px;font-size:14px}
+.kseg .seg:hover{color:#e8ecf4}
+.kseg .seg.on{background:#3b82f6;color:#fff}
 </style></head><body><div class="wrap">
 <div class="card"><div class="row" style="justify-content:space-between">
 <div><h1>📡 sing-box 订阅管理</h1><small>远程拉取订阅 → 校验 → SIGHUP 热重载，老连接不断</small></div>
@@ -1120,14 +1151,18 @@ button:disabled .vtag{color:#64748b}
 <div class="kgrid" style="margin-top:12px">
 <div class="kbox"><div class="klabel">当前运行</div><div class="kval" id="kCurrent">-</div><div class="ksub" id="kCurrentBin">-</div></div>
 <div class="kbox"><div class="klabel">版本基线</div><div class="kval" id="kBase">-</div><div class="ksub" id="kBaseSub">-</div></div>
-<div class="kbox"><div class="klabel">最新稳定版</div><div class="kval" id="kStable">-</div><div class="ksub" id="kStableSub">-</div></div>
-<div class="kbox"><div class="klabel">最新预览版</div><div class="kval" id="kPreview">-</div><div class="ksub" id="kPreviewSub">-</div></div>
+<div class="kbox"><div class="klabel">已选通道</div><div class="kval" id="kChannel">稳定版</div><div class="ksub">检查与更新都按此通道</div></div>
+<div class="kbox"><div class="klabel">可更新到</div><div class="kval" id="kTarget">-</div><div class="ksub" id="kTargetSub">点「检查更新」获取</div></div>
+</div>
+<div class="kseg" id="kSeg" style="margin-top:12px">
+<button class="seg" data-ch="stable">稳定版</button>
+<button class="seg" data-ch="preview">预览版</button>
 </div>
 <div id="kHint" class="khint" style="display:none"></div>
 <div class="kbar-wrap"><div class="kbar" id="kBar"></div></div>
 <div class="row" style="margin-top:12px">
-<button id="btnUseStable">切换到稳定版<span class="vtag" id="kStableTag"></span></button>
-<button id="btnUsePreview">切换到预览版<span class="vtag" id="kPreviewTag"></span></button>
+<button class="ghost" id="btnKernelCheck">⟳ 检查更新</button>
+<button id="btnUseSelected">更新到所选版本</button>
 <button class="ghost" id="btnKernelRestore">恢复内置版</button>
 </div>
 <div style="margin-top:12px"><div class="klabel">最近操作</div><pre id="kLog" style="max-height:140px;margin:6px 0 0">-</pre></div>
@@ -1143,6 +1178,7 @@ if(r.status===401){const t=prompt('请输入 MANAGER_TOKEN:');if(t!==null){local
 const j=await r.json().catch(()=>({}));if(!r.ok)throw new Error(j.message||j.error||('HTTP '+r.status));return j;}
 async function refresh(){try{const s=await api('/api/status');
 document.getElementById('status').innerHTML=`<small>sing-box: ${s.singbox.running?('运行中 pid='+s.singbox.pid):'<b style=color:#f87171>未运行</b>'} · 配置: ${s.config.exists?('✅ '+s.config.size+'B @ '+s.config.mtime):'❌ 不存在'} · 订阅: ${s.subscriptions.enabled}/${s.subscriptions.total} 启用 · 上次: ${s.last_update.at||'-'} ${s.last_update.message||''}</small>`;
+if(s.kernel){KC.info=Object.assign({},KC.info||{},s.kernel);kRenderBase();kRenderTarget();}
 const subs=await api('/api/subscriptions');render(subs);}catch(e){document.getElementById('status').innerHTML='<small style=color:#f87171>'+e.message+'</small>';}}
 function render(subs){const el=document.getElementById('list');
 if(!subs.length){el.innerHTML='<small>暂无订阅，请先添加。</small>';return;}
@@ -1169,43 +1205,40 @@ btnReload.onclick=async()=>{btnReload.disabled=true;btnReload.textContent='更�
 try{const r=await api('/api/reload',{method:'POST',body:JSON.stringify({fetch:true})});
 alert((r.reloaded?'✅ 热重载成功：':'✅ 配置已更新（'+r.message+'）\\n')+r.message+'\\n节点数:'+(r.count??'-'));refresh();loadLogs();}catch(e){alert('❌ '+e.message);}finally{btnReload.disabled=false;btnReload.textContent='⚡ 立即更新并重载';}};
 btnReloadOnly.onclick=async()=>{try{const r=await api('/api/reload-only',{method:'POST'});alert(r.message);refresh();}catch(e){alert('❌ '+e.message);}};
-async function loadKernel(force){
-const keep=document.getElementById('kLog').textContent;
-try{
-const k=await api('/api/kernel'+(force?'?refresh=1':''));
-window._kernel=k;
-const L=k.latest||{},cur=k.current||{},managed=k.source==='compose';
-const cv=cur.version||'?';
-const set=(id,v)=>{document.getElementById(id).textContent=v;};
-set('kCurrent',cv);
-set('kCurrentBin',cur.bin||'-');
-set('kBase',managed?('compose · '+k.env_want):'面板管理');
+const KC={info:null,channel:localStorage.getItem('sb_kchannel')||'stable',target:''};
+function kRenderBase(){
+const k=KC.info||{};const set=(id,v)=>{document.getElementById(id).textContent=v;};
+set('kCurrent',k.version||'-');
+set('kCurrentBin',k.bin||'-');
+set('kBase',k.source==='compose'?('compose · '+(k.env_want||'-')):'面板管理');
 set('kBaseSub','内置 '+(k.baked||'-')+' · 钉住 '+(k.pinned||'无'));
-set('kStable',L.stable||'-');set('kPreview',L.preview||'-');
-const onStable=sameVer(L.stable,cv),onPreview=sameVer(L.preview,cv);
-document.getElementById('kStableSub').textContent=onStable?'✓ 正在使用':(L.stable?'可切换':'暂未获取到');
-document.getElementById('kPreviewSub').textContent=onPreview?'✓ 正在使用':(L.preview?'可切换':'暂未获取到');
+set('kChannel',KC.channel==='preview'?'预览版':'稳定版');
+document.querySelectorAll('#kSeg .seg').forEach(b=>b.classList.toggle('on',b.getAttribute('data-ch')===KC.channel));
+}
+function kRenderTarget(){
+const set=(id,v)=>{document.getElementById(id).textContent=v;};
+const k=KC.info||{},L=(k.latest||{});
+set('kTarget',KC.target||'-');
+set('kTargetSub',KC.target?(sameVer(KC.target,k.version)?'✓ 与当前一致':'待更新'):'点「检查更新」获取');
 const hint=document.getElementById('kHint');
-let hintHtml='',hintCls='khint';
-if(L.error){hintHtml='⚠ 上游查询失败：'+L.error;hintCls+=' warn';}
-else if(onStable||onPreview){hintHtml='当前已是'+(onStable?'最新稳定版':'最新预览版')+'，无需切换'+(L.checked_at?('（检查于 '+L.checked_at+'）'):'');hintCls+=' up';}
-else if(L.stable||L.preview){hintHtml='有新版本可切换'+(L.checked_at?('（检查于 '+L.checked_at+'）'):'');hintCls+=' up';}
-else if(L.checked_at){hintHtml='上次检查：'+L.checked_at;}
-if(managed&&L.stable&&compareVer(L.stable,k.env_want)<=0&&!onStable){hintHtml='新稳定版 '+L.stable+' 不高于 compose 基线 '+k.env_want+'，面板不会切换';hintCls='khint warn';}
-hint.className=hintCls;hint.style.display=hintHtml?'':'none';hint.textContent=hintHtml;
-const lockOf=v=>({ok:!!v&&!sameVer(v,cv)&&!(managed&&compareVer(v,k.env_want)<=0),cur:sameVer(v,cv)});
-const st=lockOf(L.stable),pv=lockOf(L.preview);
-document.getElementById('kStableTag').textContent=L.stable?L.stable:(L.error?'查询失败':'未获取');
-document.getElementById('kPreviewTag').textContent=L.preview?L.preview:(L.error?'查询失败':'未获取');
-document.getElementById('btnUseStable').disabled=!st.ok;
-document.getElementById('btnUsePreview').disabled=!pv.ok;
-if(keep&&keep!=='-'&&keep.trim())document.getElementById('kLog').textContent=keep;
-}catch(e){
-document.getElementById('kCurrent').textContent='查询失败';
-document.getElementById('kHint').className='khint warn';
-document.getElementById('kHint').style.display='';
-document.getElementById('kHint').textContent=e.message;
-}}
+let msg='',cls='khint';
+const label=KC.channel==='preview'?'预览版':'稳定版';
+if(KC.upErr){msg='⚠ 上游查询失败：'+KC.upErr;cls+=' warn';}
+else if(!KC.target){msg='已选择'+label+'通道，点「检查更新」查看最新版本';}
+else if(L.error){msg='⚠ 上游查询失败：'+L.error;cls+=' warn';}
+else if(sameVer(KC.target,k.version)){msg='当前已是'+label+'最新版 ' + KC.target;cls+=' up';}
+else{msg='可更新到'+label+' '+KC.target+(L.checked_at?'（检查于 '+L.checked_at+'）':'');cls+=' up';}
+const blocked=KC.target&&k.source==='compose'&&compareVer(KC.target,k.env_want)<=0&&!sameVer(KC.target,k.version);
+if(blocked){msg='目标 '+KC.target+' 不高于 compose 基线 '+k.env_want+'，面板不会更新';cls='khint warn';}
+hint.className=cls;hint.style.display=msg?'':'none';hint.textContent=msg;
+document.getElementById('btnUseSelected').disabled=!((KC.target&&!sameVer(KC.target,k.version)&&!blocked)&&!KC.busy);
+document.getElementById('btnUseSelected').textContent=KC.busy?'更新中…':'更新到所选版本';
+}
+function kSetChannel(ch){
+KC.channel=ch;localStorage.setItem('sb_kchannel',ch);
+KC.target='';kRenderBase();kRenderTarget();
+}
+document.getElementById('kSeg').addEventListener('click',e=>{const b=e.target.closest('[data-ch]');if(b){kSetChannel(b.getAttribute('data-ch'));klog('已选择'+(KC.channel==='preview'?'预览版':'稳定版')+'通道，点检查更新获取版本');}});
 function compareVer(a,b){
 const norm=v=>{v=String(v||'').replace(/^[vV]/,'');const[i,pre='']=v.split('-');return{core:i.split('.').map(n=>parseInt(n,10)||0),pre};};
 const A=norm(a),B=norm(b);const n=Math.max(A.core.length,B.core.length);
@@ -1218,31 +1251,49 @@ return ra!==rb?ra>rb?1:-1:ta!==tb?ta>tb?1:-1:0;
 function sameVer(a,b){return !!a&&!!b&&compareVer(a,b)===0;}
 function klog(msg){const el=document.getElementById('kLog');const t=new Date().toLocaleTimeString();
 el.textContent=('['+t+'] '+msg+'\\n'+(el.textContent==='-'?'':el.textContent)).slice(0,4000);}
-async function switchCached(v){
-const k=window._kernel||{};
+async function kLoadInfo(force){
+const raw=await api('/api/kernel'+(force?'?refresh=1':''));
+const cur=raw.current||{};
+KC.info={version:cur.version||'',bin:cur.bin||'',baked:raw.baked||'',pinned:raw.pinned||'',
+source:raw.source||'panel',env_want:raw.env_want||'',latest:raw.latest||{},cached:raw.cached||[]};
+const L=KC.info.latest;
+KC.target=KC.channel==='preview'?(L.preview||''):(L.stable||'');
+KC.upErr=L.error||'';
+kRenderBase();kRenderTarget();
+return KC.info;
+}
+async function kInit(){
+kRenderBase();
+try{KC.info=await api('/api/status').then(s=>s.kernel||{});kRenderBase();}catch(e){}
+kRenderTarget();
+}
+async function kSwitch(v){
+const k=KC.info||{};
 if(!v)return klog('未获取到该通道版本，请先检查更新');
 if(k.source==='compose'&&compareVer(v,k.env_want)<=0)return klog('拒绝：'+v+' 不高于 compose 基线 '+k.env_want);
-klog('开始切换到 '+v+'（下载→校验→重启，可能需要几十秒）…');
+klog('开始更新到 '+v+'（下载→校验→重启，可能需要几十秒）…');
+KC.busy=true;kRenderTarget();
 const bar=document.getElementById('kBar');bar.className='kbar run';
-btnUseStable.disabled=true;btnUsePreview.disabled=true;btnKernelRestore.disabled=true;
+btnKernelCheck.disabled=true;btnKernelRestore.disabled=true;
 const t0=Date.now();
 try{const r=await api('/api/kernel/update',{method:'POST',body:JSON.stringify({version:v})});
-klog('✅ 已切换到 '+(r.version||v)+'，耗时 '+((Date.now()-t0)/1000).toFixed(1)+'s');
-await loadKernel(false);refresh();loadLogs();
-}catch(e){klog('❌ 切换失败：'+e.message);await loadKernel(false);
-}finally{bar.className='kbar';bar.style.width='0';btnKernelRestore.disabled=false;}}
-btnUseStable.onclick=()=>switchCached(((window._kernel||{}).latest||{}).stable);
-btnUsePreview.onclick=()=>switchCached(((window._kernel||{}).latest||{}).preview);
+klog('✅ 已更新到 '+(r.version||v)+'，耗时 '+((Date.now()-t0)/1000).toFixed(1)+'s');
+await kLoadInfo(false);refresh();loadLogs();
+}catch(e){klog('❌ 更新失败：'+e.message);try{await kLoadInfo(false);}catch(_){}}
+finally{KC.busy=false;bar.className='kbar';bar.style.width='0';btnKernelCheck.disabled=false;btnKernelRestore.disabled=false;kRenderTarget();}}
+btnUseSelected.onclick=()=>kSwitch(KC.target);
 btnKernelCheck.onclick=async()=>{btnKernelCheck.disabled=true;btnKernelCheck.textContent='检查中…';
-try{await loadKernel(true);klog('已检查更新');}finally{btnKernelCheck.disabled=false;btnKernelCheck.textContent='⟳ 检查更新';}};
-btnKernelRestore.onclick=async()=>{const k=window._kernel||{};if(!k.baked)return klog('未找到内置版本');
+try{await kLoadInfo(true);klog('已检查'+(KC.channel==='preview'?'预览版':'稳定版')+'通道：'+(KC.target||'未获取到'));}
+catch(e){KC.upErr=e.message;kRenderTarget();klog('❌ 检查失败：'+e.message);}
+finally{btnKernelCheck.disabled=false;btnKernelCheck.textContent='⟳ 检查更新';}};
+btnKernelRestore.onclick=async()=>{const k=KC.info||{};if(!k.baked)return klog('未找到内置版本');
 if(k.source==='compose'&&compareVer(k.baked,k.env_want)<=0)return klog('拒绝：内置版 '+k.baked+' 不高于 compose 基线 '+k.env_want);
 if(!confirm('恢复内置版 '+k.baked+'？'))return;
 klog('正在恢复内置版 '+k.baked+'…');const bar=document.getElementById('kBar');bar.className='kbar run';
-try{const r=await api('/api/kernel/restore',{method:'POST'});klog('✅ 已恢复 '+r.version);await loadKernel(false);refresh();
-}catch(e){klog('❌ 恢复失败：'+e.message);}finally{bar.className='kbar';bar.style.width='0';}};
+try{const r=await api('/api/kernel/restore',{method:'POST'});klog('✅ 已恢复 '+r.version);await kLoadInfo(false);refresh();}
+catch(e){klog('❌ 恢复失败：'+e.message);}finally{bar.className='kbar';bar.style.width='0';}};
 async function loadLogs(){try{const j=await api('/api/logs?n=200');logs.textContent=j.logs.join('\\n')||'(空)';}catch(e){logs.textContent=e.message;}}
-btnLogs.onclick=loadLogs;refresh();loadLogs();setInterval(refresh,15000);
+btnLogs.onclick=loadLogs;refresh();loadLogs();kInit();setInterval(refresh,15000);
 </script></body></html>"""
 
 
