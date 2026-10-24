@@ -631,7 +631,11 @@ def bin_version(path):
         r = subprocess.run([path, "version"], capture_output=True, text=True, timeout=15)
         first = ((r.stdout or "").strip().splitlines() or [""])[:1][0]
         m = re.search(r"sing-box version (\S+)", first)
-        return m.group(1) if m else first[:80]
+        v = m.group(1) if m else first[:80]
+        # 统一带 v 前缀，便于与 tag / 目录名直接比较
+        if v and v[0].isdigit():
+            v = "v" + v
+        return v
     except Exception:  # noqa: BLE001
         return ""
 
@@ -1188,9 +1192,9 @@ set('kStable',L.stable||'-');set('kPreview',L.preview||'-');
 let hintHtml='',hintCls='khint';
 if(L.error){hintHtml='⚠ 上游查询失败：'+L.error;hintCls+=' warn';}
 else if(L.checked_at){hintHtml='上次检查：'+L.checked_at;}
-document.getElementById('kStableSub').textContent=L.stable&&L.stable===cv?'✓ 正在使用':'可升级';
-document.getElementById('kPreviewSub').textContent=L.preview&&L.preview===cv?'✓ 正在使用':(L.preview?'预览版，仅体验用':'暂未获取到');
-if(L.stable&&L.stable!==cv){hintHtml=managed?('可升级到稳定版 '+L.stable+'（高于基线，面板可切换）'):('发现新稳定版 '+L.stable);hintCls+=' up';}
+document.getElementById('kStableSub').textContent=sameVer(L.stable,cv)?'✓ 正在使用':(L.stable?'可升级':'暂未获取到');
+document.getElementById('kPreviewSub').textContent=sameVer(L.preview,cv)?'✓ 正在使用':(L.preview?'预览版，仅体验用':'暂未获取到');
+if(L.stable&&!sameVer(L.stable,cv)){hintHtml=managed?('可升级到稳定版 '+L.stable+'（高于基线，面板可切换）'):('发现新稳定版 '+L.stable);hintCls+=' up';}
 if(managed&&L.stable&&compareVer(L.stable,k.env_want)<=0){hintHtml='新版本 '+L.stable+' 不高于 compose 基线 '+k.env_want+'，面板不会切换';hintCls+=' warn';}
 hint.className=hintCls;hint.style.display=hintHtml?'':'none';hint.textContent=hintHtml;
 const tags=[];
@@ -1199,7 +1203,7 @@ if(L.preview&&L.preview!==L.stable)tags.push({v:L.preview,t:'preview'});
 (k.cached||[]).forEach(c=>{if(!tags.some(t=>t.v===c.version))tags.push({v:c.version,t:'cached'})});
 const dl=document.getElementById('kVersions');dl.innerHTML=tags.map(t=>'<option value="'+esc(t.v)+'">').join('');
 document.getElementById('kTags').innerHTML=tags.length?tags.map(t=>{
-const isCur=t.v===cv;
+const isCur=sameVer(t.v,cv);
 const lock=managed&&!isCur&&compareVer(t.v,k.env_want)<=0;
 const cls='ktag'+(isCur?' cur':'')+(lock?' locked':'');
 const sub=isCur?'使用中':(t.t==='stable'?'稳定版':t.t==='preview'?'预览版':'已缓存');
@@ -1221,6 +1225,7 @@ const rank=p=>{const m=/^(alpha|beta|pre|rc)/i.exec(p);const r=m?({alpha:1,beta:
 const[ra,ta]=rank(A.pre),[rb,tb]=rank(B.pre);
 return ra!==rb?ra>rb?1:-1:ta!==tb?ta>tb?1:-1:0;
 }
+function sameVer(a,b){return !!a&&!!b&&compareVer(a,b)===0;}
 document.getElementById('kTags').addEventListener('click',e=>{const b=e.target.closest('[data-kv]');if(b)switchCached(b.getAttribute('data-kv'));});
 function klog(msg){const el=document.getElementById('kLog');const t=new Date().toLocaleTimeString();
 el.textContent=('['+t+'] '+msg+'\n'+(el.textContent==='-'?'':el.textContent)).slice(0,4000);}
